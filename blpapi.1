@@ -1,960 +1,254 @@
+"""
+SOFR Volatility Dashboard
+Method: Daily range (High - Low) averaged over 20-day rolling window.
+Summary row at top of each sheet shows current 20D avg range.
+Run daily with Bloomberg Terminal open.
+"""
+ 
 import blpapi
 import pandas as pd
-import datetime as dt
-
-HOST = "127.0.0.1"
-PORT = 8194
-
-SECURITIES = {
-    "1Y1Y": "S0042FS 1Y1Y BLC Curncy",
-    "2Y2Y": "S0042FS 2Y2Y BLC Curncy",
-    "5Y5Y": "S0042FS 5Y5Y BLC Curncy",
-    "10Y10Y": "S0042FS 10Y10Y BLC Curncy",
-    "SFR5": "SFR5 Comdty",
-    "SFR9": "SFR9 Comdty",
-    "SFR13": "SFR 13 Comdty",
+import numpy as np
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
+from datetime import datetime, timedelta
+ 
+# ── Tickers ───────────────────────────────────────────────────────────────────
+TICKERS = {
+    "1Y1Y Swap":   "S0042FS 1Y1Y BLC Curncy",
+    "2Y2Y Swap":   "S0042FS 2Y2Y BLC Curncy",
+    "5Y5Y Swap":   "S0042FS 5Y5Y BLC Curncy",
+    "10Y10Y Swap": "S0042FS 10Y10Y BLC Curncy",
+    "SFR5":        "SFR5 Comdty",
+    "SFR9":        "SFR9 Comdty",
+    "SFR13":       "SFR 13 Comdty",
 }
-
-FIELDS = ["PX_HIGH", "PX_LOW"]
-START_DATE = "20240101"
-END_DATE = dt.datetime.today().strftime("%Y%m%d")
-
-
+ 
+FIELDS         = ["PX_HIGH", "PX_LOW"]
+ROLLING_WINDOW = 20
+OUTPUT_FILE    = "SOFR_Vol_Dashboard.xlsx"
+ 
+# ── Bloomberg ─────────────────────────────────────────────────────────────────
 def start_session():
-    options = blpapi.SessionOptions()
-    options.setServerHost(HOST)
-    options.setServerPort(PORT)
-
-    session = blpapi.Session(options)
+    opts = blpapi.SessionOptions()
+    opts.setServerHost("localhost")
+    opts.setServerPort(8194)
+    session = blpapi.Session(opts)
     if not session.start():
-        raise RuntimeError("Failed to start Bloomberg session.")
+        raise RuntimeError("Failed to start Bloomberg session. Is Terminal running?")
     if not session.openService("//blp/refdata"):
-        raise RuntimeError("Failed to open //blp/refdata.")
+        raise RuntimeError("Failed to open //blp/refdata service.")
     return session
-
-
-def fetch_historical_high_low(session, securities, fields, start_date, end_date):
-    service = session.getService("//blp/refdata")
-    request = service.createRequest("HistoricalDataRequest")
-
-    for sec in securities.values():
-        request.getElement("securities").appendValue(sec)
-
-    for field in fields:
-        request.getElement("fields").appendValue(field)
-
-    request.set("startDate", start_date)
-    request.set("endDate", end_date)
+ 
+def fetch_historical(session, tickers, start_date, end_date):
+    refdata = session.getService("//blp/refdata")
+    request = refdata.createRequest("HistoricalDataRequest")
+    for t in tickers:
+        request.getElement("securities").appendValue(t)
+    for f in FIELDS:
+        request.getElement("fields").appendValue(f)
+    request.set("startDate", start_date.strftime("%Y%m%d"))
+    request.set("endDate",   end_date.strftime("%Y%m%d"))
     request.set("periodicitySelection", "DAILY")
-
     session.sendRequest(request)
-
-    rows = []
-
+ 
+    data = {t: {} for t in tickers}
     while True:
-        event = session.nextEvent()
+        event = session.nextEvent(500)
         for msg in event:
-            if msg.hasElement("responseError"):
-                raise RuntimeError(f"Bloomberg response error: {msg}")
-
             if msg.hasElement("securityData"):
-                sec_data = msg.getElement("securityData")
-                security = sec_data.getElementAsString("security")
-
-                # Security-level errors
-                if sec_data.hasElement("securityError"):
-                    print(f"Security error for {security}: {sec_data.getElement('securityError')}")
-
-                if sec_data.hasElement("fieldData"):
-                    field_data = sec_data.getElement("fieldData")
-                    for i in range(field_data.numValues()):
-                        row = field_data.getValueAsElement(i)
-
-                        date_val = pd.to_datetime(row.getElementAsDatetime("date"))
-                        high_val = row.getElementAsFloat("PX_HIGH") if row.hasElement("PX_HIGH") else None
-                        low_val = row.getElementAsFloat("PX_LOW") if row.hasElement("PX_LOW") else None
-
-                        rows.append(
-                            {
-                                "security": security,
-                                "date": date_val,
-                                "PX_HIGH": high_val,
-                                "PX_LOW": low_val,
-                            }
-                        )
-
+                sec  = msg.getElement("securityData")
+                tkr  = sec.getElementAsString("security")
+                rows = sec.getElement("fieldData")
+                for i in range(rows.numValues()):
+                    row  = rows.getValue(i)
+                    date = row.getElementAsDatetime("date").date()
+                    hi   = row.getElementAsFloat("PX_HIGH") if row.hasElement("PX_HIGH") else np.nan
+                    lo   = row.getElementAsFloat("PX_LOW")  if row.hasElement("PX_LOW")  else np.nan
+                    data[tkr][date] = {"PX_HIGH": hi, "PX_LOW": lo}
         if event.eventType() == blpapi.Event.RESPONSE:
             break
-
-    return pd.DataFrame(rows)
-
-
-def build_20d_avg_range(df, securities):
-    reverse_map = {v: k for k, v in securities.items()}
-    df["label"] = df["security"].map(reverse_map)
-
-    df = df.sort_values(["label", "date"]).copy()
-    df["daily_range"] = df["PX_HIGH"] - df["PX_LOW"]
-    df["range_20d_avg"] = (
-        df.groupby("label")["daily_range"]
-        .rolling(20)
-        .mean()
-        .reset_index(level=0, drop=True)
-    )
-
-    return df[
-        ["date", "label", "PX_HIGH", "PX_LOW", "daily_range", "range_20d_avg"]
-    ]
-
-
-def build_wide_output(df):
-    wide = df.pivot(index="date", columns="label", values="range_20d_avg").sort_index()
-    wide.reset_index(inplace=True)
-    return wide
-
-
-def main():
-    session = start_session()
+    return data
+ 
+# ── Build per-instrument DataFrame ────────────────────────────────────────────
+def build_instrument_df(raw_dates):
+    records = []
+    for date, vals in sorted(raw_dates.items()):
+        hi  = vals["PX_HIGH"]
+        lo  = vals["PX_LOW"]
+        rng = hi - lo if (pd.notna(hi) and pd.notna(lo)) else np.nan
+        records.append({"Date": pd.Timestamp(date), "High": hi, "Low": lo, "Daily Range": rng})
+    df = pd.DataFrame(records).set_index("Date")
+    df["20D Avg Range"] = df["Daily Range"].rolling(ROLLING_WINDOW).mean()
+    return df
+ 
+# ── Styles ────────────────────────────────────────────────────────────────────
+NAVY       = "1F3864"
+LIGHT_BLUE = "DCE6F1"
+GOLD       = "C9A84C"
+WHITE      = "FFFFFF"
+DARK_GREY  = "404040"
+LIGHT_GREY = "F2F2F2"
+ 
+def thin_border():
+    s = Side(style="thin", color="BFBFBF")
+    return Border(left=s, right=s, top=s, bottom=s)
+ 
+def header_style(cell, bg=NAVY, fg=WHITE):
+    cell.font      = Font(name="Arial", bold=True, color=fg, size=10)
+    cell.fill      = PatternFill("solid", start_color=bg)
+    cell.alignment = Alignment(horizontal="center", vertical="center")
+    cell.border    = thin_border()
+ 
+def body_style(cell, row_idx):
+    bg = LIGHT_BLUE if row_idx % 2 == 0 else WHITE
+    cell.font      = Font(name="Arial", size=10)
+    cell.fill      = PatternFill("solid", start_color=bg)
+    cell.alignment = Alignment(horizontal="right")
+    cell.border    = thin_border()
+ 
+def safe_val(val):
+    if isinstance(val, str):
+        return val
     try:
-        raw_df = fetch_historical_high_low(
-            session=session,
-            securities=SECURITIES,
-            fields=FIELDS,
-            start_date=START_DATE,
-            end_date=END_DATE,
-        )
-
-        result_long = build_20d_avg_range(raw_df, SECURITIES)
-        result_wide = build_wide_output(result_long)
-
-        with pd.ExcelWriter("20d_avg_high_low_range.xlsx", engine="openpyxl") as writer:
-            result_long.to_excel(writer, sheet_name="long_data", index=False)
-            result_wide.to_excel(writer, sheet_name="20d_avg_matrix", index=False)
-
-        print("Saved: 20d_avg_high_low_range.xlsx")
-        print(result_wide.tail())
-
-    finally:
-        session.stop()
-
-
+        return "" if pd.isna(val) else round(float(val), 4)
+    except Exception:
+        return ""
+ 
+# ── Write one sheet per instrument ───────────────────────────────────────────
+def write_instrument_sheet(wb, label, df):
+    ws = wb.create_sheet(title=label)
+    run_date    = datetime.today().strftime("%Y-%m-%d")
+    valid_vol   = df["20D Avg Range"].dropna()
+    current_20d = valid_vol.iloc[-1] if len(valid_vol) > 0 else np.nan
+ 
+    # Row 1: Title
+    ws.merge_cells("A1:E1")
+    ws["A1"] = f"{label}  |  Updated: {run_date}"
+    ws["A1"].font      = Font(name="Arial", bold=True, size=13, color=NAVY)
+    ws["A1"].alignment = Alignment(horizontal="left", vertical="center")
+    ws.row_dimensions[1].height = 24
+ 
+    # Row 2: Current 20D callout
+    ws.merge_cells("A2:B2")
+    ws["A2"] = "Current 20D Avg Range:"
+    ws["A2"].font      = Font(name="Arial", bold=True, size=11, color=DARK_GREY)
+    ws["A2"].alignment = Alignment(horizontal="left", vertical="center")
+    ws["A2"].fill      = PatternFill("solid", start_color=LIGHT_GREY)
+    ws["A2"].border    = thin_border()
+ 
+    ws["C2"] = round(current_20d, 4) if pd.notna(current_20d) else "N/A"
+    ws["C2"].font          = Font(name="Arial", bold=True, size=14, color=GOLD)
+    ws["C2"].alignment     = Alignment(horizontal="center", vertical="center")
+    ws["C2"].fill          = PatternFill("solid", start_color=LIGHT_GREY)
+    ws["C2"].number_format = "0.0000"
+    ws["C2"].border        = thin_border()
+    ws.row_dimensions[2].height = 28
+ 
+    # Row 3: spacer
+    ws.row_dimensions[3].height = 6
+ 
+    # Row 4: Headers
+    headers = ["Date", "High", "Low", "Daily Range (Hi-Lo)", "20D Avg Range"]
+    for col_idx, h in enumerate(headers, start=1):
+        cell = ws.cell(row=4, column=col_idx, value=h)
+        header_style(cell)
+    ws.row_dimensions[4].height = 30
+ 
+    # Rows 5+: Data (newest first)
+    for row_offset, (date, row) in enumerate(df.iloc[::-1].iterrows()):
+        excel_row = row_offset + 5
+        vals = [
+            date.strftime("%Y-%m-%d"),
+            row["High"],
+            row["Low"],
+            row["Daily Range"],
+            row["20D Avg Range"],
+        ]
+        for col_idx, val in enumerate(vals, start=1):
+            cell       = ws.cell(row=excel_row, column=col_idx)
+            cell.value = val if col_idx == 1 else safe_val(val)
+            body_style(cell, excel_row)
+            if col_idx == 1:
+                cell.alignment = Alignment(horizontal="center")
+            if col_idx > 1 and isinstance(cell.value, float):
+                cell.number_format = "0.0000"
+ 
+    col_widths = [14, 12, 12, 22, 18]
+    for i, w in enumerate(col_widths, start=1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+ 
+    ws.freeze_panes = "A5"
+ 
+# ── Summary sheet ─────────────────────────────────────────────────────────────
+def write_summary_sheet(wb, summary_data):
+    ws = wb.active
+    ws.title = "Summary"
+    run_date = datetime.today().strftime("%Y-%m-%d")
+ 
+    ws.merge_cells("A1:C1")
+    ws["A1"] = f"SOFR Vol Dashboard  —  Current 20D Avg Range  |  {run_date}"
+    ws["A1"].font      = Font(name="Arial", bold=True, size=13, color=NAVY)
+    ws["A1"].alignment = Alignment(horizontal="left", vertical="center")
+    ws.row_dimensions[1].height = 26
+ 
+    for col_idx, h in enumerate(["Instrument", "Current 20D Avg Range", "Category"], start=1):
+        cell = ws.cell(row=2, column=col_idx, value=h)
+        header_style(cell)
+    ws.row_dimensions[2].height = 30
+ 
+    categories = {
+        "1Y1Y Swap":   "Swap Rate",    "2Y2Y Swap":  "Swap Rate",
+        "5Y5Y Swap":   "Swap Rate",    "10Y10Y Swap": "Swap Rate",
+        "SFR5":        "SOFR Futures", "SFR9":        "SOFR Futures",
+        "SFR13":       "SOFR Futures",
+    }
+ 
+    for r, (label, val) in enumerate(summary_data.items(), start=3):
+        fill = LIGHT_BLUE if r % 2 == 0 else WHITE
+        display_val = round(val, 4) if pd.notna(val) else "N/A"
+        for c, v in enumerate([label, display_val, categories.get(label, "")], start=1):
+            cell            = ws.cell(row=r, column=c, value=v)
+            cell.fill       = PatternFill("solid", start_color=fill)
+            cell.alignment  = Alignment(horizontal="right" if c == 2 else "left")
+            cell.border     = thin_border()
+            if c == 2 and isinstance(v, float):
+                cell.font          = Font(name="Arial", size=11, bold=True, color=GOLD)
+                cell.number_format = "0.0000"
+            else:
+                cell.font = Font(name="Arial", size=10)
+ 
+    for col, width in zip(["A", "B", "C"], [18, 24, 16]):
+        ws.column_dimensions[col].width = width
+    ws.freeze_panes = "A3"
+ 
+# ── Main ──────────────────────────────────────────────────────────────────────
+def main():
+    end_date   = datetime.today()
+    start_date = end_date - timedelta(days=365 * 5 + 30)
+ 
+    print("Connecting to Bloomberg...")
+    session = start_session()
+ 
+    print("Fetching 5 years of Hi/Lo data...")
+    raw = fetch_historical(session, list(TICKERS.values()), start_date, end_date)
+    session.stop()
+ 
+    print("Building workbook...")
+    wb = Workbook()
+ 
+    summary_data = {}
+    for label, ticker in TICKERS.items():
+        df          = build_instrument_df(raw.get(ticker, {}))
+        valid_vol   = df["20D Avg Range"].dropna()
+        summary_data[label] = valid_vol.iloc[-1] if len(valid_vol) > 0 else np.nan
+        write_instrument_sheet(wb, label, df)
+ 
+    write_summary_sheet(wb, summary_data)
+    wb.move_sheet("Summary", offset=-len(wb.sheetnames) + 1)
+ 
+    wb.save(OUTPUT_FILE)
+    print(f"Done. Saved: {OUTPUT_FILE}")
+ 
 if __name__ == "__main__":
     main()
-
-
-
-
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1> python -c "import blpapi; print(blpapi.__version__)"import blpapi                                                                                                        
-3.26.2.1
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1> import pandas as pd
-import : The term 'import' is not recognized as the name of a cmdlet, function, script file, or operable program. Check the spelling of the name, 
-or if a path was included, verify that the path is correct and try again.
-At line:1 char:1
-+ import pandas as pd
-+ ~~~~~~
-    + CategoryInfo          : ObjectNotFound: (import:String) [], CommandNotFoundException
-    + FullyQualifiedErrorId : CommandNotFoundException
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1> import datetime as dt
-import : The term 'import' is not recognized as the name of a cmdlet, function, script file, or operable program. Check the spelling of the name, 
-or if a path was included, verify that the path is correct and try again.
-At line:1 char:1
-+ import datetime as dt
-+ ~~~~~~
-    + CategoryInfo          : ObjectNotFound: (import:String) [], CommandNotFoundException
-    + FullyQualifiedErrorId : CommandNotFoundException
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1> 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1> HOST = "127.0.0.1"
-Get-Host : A positional parameter cannot be found that accepts argument '='.
-At line:1 char:1
-+ HOST = "127.0.0.1"
-+ ~~~~~~~~~~~~~~~~~~
-    + CategoryInfo          : InvalidArgument: (:) [Get-Host], ParameterBindingException
-    + FullyQualifiedErrorId : PositionalParameterNotFound,Microsoft.PowerShell.Commands.GetHostCommand
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1> PORT = 8194
-PORT : The term 'PORT' is not recognized as the name of a cmdlet, function, script file, or operable program. Check the spelling of the name, or 
-if a path was included, verify that the path is correct and try again.
-At line:1 char:1
-+ PORT = 8194
-+ ~~~~
-    + CategoryInfo          : ObjectNotFound: (PORT:String) [], CommandNotFoundException
-    + FullyQualifiedErrorId : CommandNotFoundException
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1> 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1> SECURITIES = {
->>     "1Y1Y": "S0042FS 1Y1Y BLC Curncy",                                                                                                          
->>     "2Y2Y": "S0042FS 2Y2Y BLC Curncy",                                                                                                          
->>     "5Y5Y": "S0042FS 5Y5Y BLC Curncy",                                                                                                          
->>     "10Y10Y": "S0042FS 10Y10Y BLC Curncy",                                                                                                      
->>     "SFR5": "SFR5 Comdty",                                                                                                                      
->>     "SFR9": "SFR9 Comdty",                                                                                                                      
->>     "SFR13": "SFR 13 Comdty",                                                                                                                   
->> }                                                                                                                                               
-At line:2 char:11
-+     "1Y1Y": "S0042FS 1Y1Y BLC Curncy",
-+           ~
-Unexpected token ':' in expression or statement.
-At line:8 char:30
-+     "SFR13": "SFR 13 Comdty",
-+                              ~
-Missing expression after ',' in pipeline element.
-    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException
-    + FullyQualifiedErrorId : UnexpectedToken
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1> 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1> FIELDS = ["PX_HIGH", "PX_LOW"]                                                                                                                                           
-FIELDS : The term 'FIELDS' is not recognized as the name of a cmdlet, function, script file, or operable program. Check the spelling of the name, 
-or if a path was included, verify that the path is correct and try again.
-At line:1 char:1
-+ FIELDS = ["PX_HIGH", "PX_LOW"]
-+ ~~~~~~
-    + CategoryInfo          : ObjectNotFound: (FIELDS:String) [], CommandNotFoundException
-    + FullyQualifiedErrorId : CommandNotFoundException
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1> START_DATE = "20240101"                                                                                                                                                  
-START_DATE : The term 'START_DATE' is not recognized as the name of a cmdlet, function, script file, or operable program. Check the spelling of 
-the name, or if a path was included, verify that the path is correct and try again.
-At line:1 char:1
-+ START_DATE = "20240101"
-+ ~~~~~~~~~~
-    + CategoryInfo          : ObjectNotFound: (START_DATE:String) [], CommandNotFoundException
-    + FullyQualifiedErrorId : CommandNotFoundException
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1> END_DATE = dt.datetime.today().strftime("%Y%m%d")                                                                                                                        
-At line:1 char:30
-+ END_DATE = dt.datetime.today().strftime("%Y%m%d")
-+                              ~
-An expression was expected after '('.
-    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException
-    + FullyQualifiedErrorId : ExpectedExpression
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1> 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1> 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1> def start_session():
-At line:1 char:19
-+ def start_session():
-+                   ~
-An expression was expected after '('.
-    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException
-    + FullyQualifiedErrorId : ExpectedExpression
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>     options = blpapi.SessionOptions()                                                                                                                                    
-At line:1 char:37
-+     options = blpapi.SessionOptions()
-+                                     ~
-An expression was expected after '('.
-    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException
-    + FullyQualifiedErrorId : ExpectedExpression
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>     options.setServerHost(HOST)                                                                                                                                          
-options.setServerHost : The term 'options.setServerHost' is not recognized as the name of a cmdlet, function, script file, or operable program. 
-Check the spelling of the name, or if a path was included, verify that the path is correct and try again.
-At line:1 char:5
-+     options.setServerHost(HOST)
-+     ~~~~~~~~~~~~~~~~~~~~~
-    + CategoryInfo          : ObjectNotFound: (options.setServerHost:String) [], CommandNotFoundException
-    + FullyQualifiedErrorId : CommandNotFoundException
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>     options.setServerPort(PORT)                                                                                                                                          
-PORT : The term 'PORT' is not recognized as the name of a cmdlet, function, script file, or operable program. Check the spelling of the name, or 
-if a path was included, verify that the path is correct and try again.
-At line:1 char:27
-+     options.setServerPort(PORT)
-+                           ~~~~
-    + CategoryInfo          : ObjectNotFound: (PORT:String) [], CommandNotFoundException
-    + FullyQualifiedErrorId : CommandNotFoundException
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1> 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>     session = blpapi.Session(options)                                                                                                                                    
-options : The term 'options' is not recognized as the name of a cmdlet, function, script file, or operable program. Check the spelling of the 
-name, or if a path was included, verify that the path is correct and try again.
-At line:1 char:30
-+     session = blpapi.Session(options)
-+                              ~~~~~~~
-    + CategoryInfo          : ObjectNotFound: (options:String) [], CommandNotFoundException
-    + FullyQualifiedErrorId : CommandNotFoundException
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>     if not session.start():                                                                                                                                              
-At line:1 char:7
-+     if not session.start():
-+       ~
-Missing '(' after 'if' in if statement.
-At line:1 char:26
-+     if not session.start():
-+                          ~
-An expression was expected after '('.
-    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException
-    + FullyQualifiedErrorId : MissingOpenParenthesisInIfStatement
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>         raise RuntimeError("Failed to start Bloomberg session.")                                                                                                         
-raise : The term 'raise' is not recognized as the name of a cmdlet, function, script file, or operable program. Check the spelling of the name, 
-or if a path was included, verify that the path is correct and try again.
-At line:1 char:9
-+         raise RuntimeError("Failed to start Bloomberg session.")
-+         ~~~~~
-    + CategoryInfo          : ObjectNotFound: (raise:String) [], CommandNotFoundException
-    + FullyQualifiedErrorId : CommandNotFoundException
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>     if not session.openService("//blp/refdata"):                                                                                                                         
-At line:1 char:7
-+     if not session.openService("//blp/refdata"):
-+       ~
-Missing '(' after 'if' in if statement.
-    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException
-    + FullyQualifiedErrorId : MissingOpenParenthesisInIfStatement
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>         raise RuntimeError("Failed to open //blp/refdata.")                                                                                                              
-raise : The term 'raise' is not recognized as the name of a cmdlet, function, script file, or operable program. Check the spelling of the name, 
-or if a path was included, verify that the path is correct and try again.
-At line:1 char:9
-+         raise RuntimeError("Failed to open //blp/refdata.")
-+         ~~~~~
-    + CategoryInfo          : ObjectNotFound: (raise:String) [], CommandNotFoundException
-    + FullyQualifiedErrorId : CommandNotFoundException
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>     return session
-session : The term 'session' is not recognized as the name of a cmdlet, function, script file, or operable program. Check the spelling of the 
-name, or if a path was included, verify that the path is correct and try again.
-At line:1 char:12
-+     return session
-+            ~~~~~~~
-    + CategoryInfo          : ObjectNotFound: (session:String) [], CommandNotFoundException
-    + FullyQualifiedErrorId : CommandNotFoundException
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1> 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1> 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1> def fetch_historical_high_low(session, securities, fields, start_date, end_date):                                                                                        
-At line:1 char:38
-+ def fetch_historical_high_low(session, securities, fields, start_date ...
-+                                      ~
-Missing argument in parameter list.
-    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException
-    + FullyQualifiedErrorId : MissingArgument
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>     service = session.getService("//blp/refdata")                                                                                                                        
-Get-Service : A positional parameter cannot be found that accepts argument 'session.getService'.
-At line:1 char:5
-+     service = session.getService("//blp/refdata")
-+     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    + CategoryInfo          : InvalidArgument: (:) [Get-Service], ParameterBindingException
-    + FullyQualifiedErrorId : PositionalParameterNotFound,Microsoft.PowerShell.Commands.GetServiceCommand
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>     request = service.createRequest("HistoricalDataRequest")                                                                                                             
-request : The term 'request' is not recognized as the name of a cmdlet, function, script file, or operable program. Check the spelling of the 
-name, or if a path was included, verify that the path is correct and try again.
-At line:1 char:5
-+     request = service.createRequest("HistoricalDataRequest")
-+     ~~~~~~~
-    + CategoryInfo          : ObjectNotFound: (request:String) [], CommandNotFoundException
-    + FullyQualifiedErrorId : CommandNotFoundException
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1> 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>     for sec in securities.values():                                                                                                                                      
-At line:1 char:8
-+     for sec in securities.values():
-+        ~
-Missing opening '(' after keyword 'for'.
-At line:1 char:34
-+     for sec in securities.values():
-+                                  ~
-An expression was expected after '('.
-    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException
-    + FullyQualifiedErrorId : MissingOpenParenthesisAfterKeyword
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>         request.getElement("securities").appendValue(sec)                                                                                                                
-At line:1 char:54
-+         request.getElement("securities").appendValue(sec)
-+                                                      ~
-Missing ')' in method call.
-At line:1 char:57
-+         request.getElement("securities").appendValue(sec)
-+                                                         ~
-Unexpected token ')' in expression or statement.
-    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException
-    + FullyQualifiedErrorId : MissingEndParenthesisInMethodCall
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1> 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>     for field in fields:                                                                                                                                                 
-At line:1 char:8
-+     for field in fields:
-+        ~
-Missing opening '(' after keyword 'for'.
-    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException
-    + FullyQualifiedErrorId : MissingOpenParenthesisAfterKeyword
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>         request.getElement("fields").appendValue(field)                                                                                                                  
-At line:1 char:50
-+         request.getElement("fields").appendValue(field)
-+                                                  ~
-Missing ')' in method call.
-At line:1 char:55
-+         request.getElement("fields").appendValue(field)
-+                                                       ~
-Unexpected token ')' in expression or statement.
-    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException
-    + FullyQualifiedErrorId : MissingEndParenthesisInMethodCall
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1> 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>     request.set("startDate", start_date)                                                                                                                                 
-At line:1 char:29
-+     request.set("startDate", start_date)
-+                             ~
-Missing expression after ','.
-At line:1 char:30
-+     request.set("startDate", start_date)
-+                              ~~~~~~~~~~
-Unexpected token 'start_date' in expression or statement.
-At line:1 char:29
-+     request.set("startDate", start_date)
-+                             ~
-Missing closing ')' in expression.
-At line:1 char:40
-+     request.set("startDate", start_date)
-+                                        ~
-Unexpected token ')' in expression or statement.
-    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException
-    + FullyQualifiedErrorId : MissingExpressionAfterToken
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>     request.set("endDate", end_date)                                                                                                                                     
-At line:1 char:27
-+     request.set("endDate", end_date)
-+                           ~
-Missing expression after ','.
-At line:1 char:28
-+     request.set("endDate", end_date)
-+                            ~~~~~~~~
-Unexpected token 'end_date' in expression or statement.
-At line:1 char:27
-+     request.set("endDate", end_date)
-+                           ~
-Missing closing ')' in expression.
-At line:1 char:36
-+     request.set("endDate", end_date)
-+                                    ~
-Unexpected token ')' in expression or statement.
-    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException
-    + FullyQualifiedErrorId : MissingExpressionAfterToken
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>     request.set("periodicitySelection", "DAILY")                                                                                                                         
-request.set : The term 'request.set' is not recognized as the name of a cmdlet, function, script file, or operable program. Check the spelling of 
-the name, or if a path was included, verify that the path is correct and try again.
-At line:1 char:5
-+     request.set("periodicitySelection", "DAILY")
-+     ~~~~~~~~~~~
-    + CategoryInfo          : ObjectNotFound: (request.set:String) [], CommandNotFoundException
-    + FullyQualifiedErrorId : CommandNotFoundException
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1> 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>     session.sendRequest(request)                                                                                                                                         
-request : The term 'request' is not recognized as the name of a cmdlet, function, script file, or operable program. Check the spelling of the 
-name, or if a path was included, verify that the path is correct and try again.
-At line:1 char:25
-+     session.sendRequest(request)
-+                         ~~~~~~~
-    + CategoryInfo          : ObjectNotFound: (request:String) [], CommandNotFoundException
-    + FullyQualifiedErrorId : CommandNotFoundException
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1> 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>     rows = []
-rows : The term 'rows' is not recognized as the name of a cmdlet, function, script file, or operable program. Check the spelling of the name, or 
-if a path was included, verify that the path is correct and try again.
-At line:1 char:5
-+     rows = []
-+     ~~~~
-    + CategoryInfo          : ObjectNotFound: (rows:String) [], CommandNotFoundException
-    + FullyQualifiedErrorId : CommandNotFoundException
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1> 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>     while True:
-At line:1 char:10
-+     while True:
-+          ~
-Missing opening '(' after keyword 'while'.
-    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException
-    + FullyQualifiedErrorId : MissingOpenParenthesisAfterKeyword
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>         event = session.nextEvent()                                                                                                                                      
-At line:1 char:35
-+         event = session.nextEvent()
-+                                   ~
-An expression was expected after '('.
-    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException
-    + FullyQualifiedErrorId : ExpectedExpression
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>         for msg in event:                                                                                                                                                
-At line:1 char:12
-+         for msg in event:
-+            ~
-Missing opening '(' after keyword 'for'.
-    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException
-    + FullyQualifiedErrorId : MissingOpenParenthesisAfterKeyword
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>             if msg.hasElement("responseError"):                                                                                                                          
-At line:1 char:15
-+             if msg.hasElement("responseError"):
-+               ~
-Missing '(' after 'if' in if statement.
-    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException
-    + FullyQualifiedErrorId : MissingOpenParenthesisInIfStatement
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>                 raise RuntimeError(f"Bloomberg response error: {msg}")                                                                                                   
-fBloomberg response error: {msg} : The term 'fBloomberg response error: {msg}' is not recognized as the name of a cmdlet, function, script file, 
-or operable program. Check the spelling of the name, or if a path was included, verify that the path is correct and try again.
-At line:1 char:36
-+ ...                raise RuntimeError(f"Bloomberg response error: {msg}")
-+                                       ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    + CategoryInfo          : ObjectNotFound: (fBloomberg response error: {msg}:String) [], CommandNotFoundException
-    + FullyQualifiedErrorId : CommandNotFoundException
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1> 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>             if msg.hasElement("securityData"):                                                                                                                           
-At line:1 char:15
-+             if msg.hasElement("securityData"):
-+               ~
-Missing '(' after 'if' in if statement.
-    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException
-    + FullyQualifiedErrorId : MissingOpenParenthesisInIfStatement
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>                 sec_data = msg.getElement("securityData")                                                                                                                
-sec_data : The term 'sec_data' is not recognized as the name of a cmdlet, function, script file, or operable program. Check the spelling of the 
-name, or if a path was included, verify that the path is correct and try again.
-At line:1 char:17
-+                 sec_data = msg.getElement("securityData")
-+                 ~~~~~~~~
-    + CategoryInfo          : ObjectNotFound: (sec_data:String) [], CommandNotFoundException
-    + FullyQualifiedErrorId : CommandNotFoundException
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>                 security = sec_data.getElementAsString("security")                                                                                                       
-security : The term 'security' is not recognized as the name of a cmdlet, function, script file, or operable program. Check the spelling of the 
-name, or if a path was included, verify that the path is correct and try again.
-At line:1 char:17
-+                 security = sec_data.getElementAsString("security")
-+                 ~~~~~~~~
-    + CategoryInfo          : ObjectNotFound: (security:String) [], CommandNotFoundException
-    + FullyQualifiedErrorId : CommandNotFoundException
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1> 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>                 # Security-level errors                                                                                                                                  
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>                 if sec_data.hasElement("securityError"):                                                                                                                 
-At line:1 char:19
-+                 if sec_data.hasElement("securityError"):
-+                   ~
-Missing '(' after 'if' in if statement.
-    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException
-    + FullyQualifiedErrorId : MissingOpenParenthesisInIfStatement
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>                     print(f"Security error for {security}: {sec_data.getElement('securityError')}")                                                                      
-fSecurity error for {security}: {sec_data.getElement('securityError')} : The term 'fSecurity error for {security}: 
-{sec_data.getElement('securityError')}' is not recognized as the name of a cmdlet, function, script file, or operable program. Check the spelling 
-of the name, or if a path was included, verify that the path is correct and try again.
-At line:1 char:27
-+ ...       print(f"Security error for {security}: {sec_data.getElement('se ...
-+                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    + CategoryInfo          : ObjectNotFound: (fSecurity error...ecurityError')}:String) [], CommandNotFoundException
-    + FullyQualifiedErrorId : CommandNotFoundException
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1> 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>                 if sec_data.hasElement("fieldData"):                                                                                                                     
-At line:1 char:19
-+                 if sec_data.hasElement("fieldData"):
-+                   ~
-Missing '(' after 'if' in if statement.
-    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException
-    + FullyQualifiedErrorId : MissingOpenParenthesisInIfStatement
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>                     field_data = sec_data.getElement("fieldData")                                                                                                        
-field_data : The term 'field_data' is not recognized as the name of a cmdlet, function, script file, or operable program. Check the spelling of 
-the name, or if a path was included, verify that the path is correct and try again.
-At line:1 char:21
-+                     field_data = sec_data.getElement("fieldData")
-+                     ~~~~~~~~~~
-    + CategoryInfo          : ObjectNotFound: (field_data:String) [], CommandNotFoundException
-    + FullyQualifiedErrorId : CommandNotFoundException
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>                     for i in range(field_data.numValues()):                                                                                                              
-At line:1 char:24
-+                     for i in range(field_data.numValues()):
-+                        ~
-Missing opening '(' after keyword 'for'.
-At line:1 char:57
-+                     for i in range(field_data.numValues()):
-+                                                         ~
-An expression was expected after '('.
-    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException
-    + FullyQualifiedErrorId : MissingOpenParenthesisAfterKeyword
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>                         row = field_data.getValueAsElement(i)
-i : The term 'i' is not recognized as the name of a cmdlet, function, script file, or operable program. Check the spelling of the name, or if a 
-path was included, verify that the path is correct and try again.
-At line:1 char:60
-+                         row = field_data.getValueAsElement(i)
-+                                                            ~
-    + CategoryInfo          : ObjectNotFound: (i:String) [], CommandNotFoundException
-    + FullyQualifiedErrorId : CommandNotFoundException
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1> 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>                         date_val = pd.to_datetime(row.getElementAsDatetime("date"))
-row.getElementAsDatetime : The term 'row.getElementAsDatetime' is not recognized as the name of a cmdlet, function, script file, or operable 
-program. Check the spelling of the name, or if a path was included, verify that the path is correct and try again.
-At line:1 char:51
-+ ...            date_val = pd.to_datetime(row.getElementAsDatetime("date") ...
-+                                          ~~~~~~~~~~~~~~~~~~~~~~~~
-    + CategoryInfo          : ObjectNotFound: (row.getElementAsDatetime:String) [], CommandNotFoundException
-    + FullyQualifiedErrorId : CommandNotFoundException
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>                         high_val = row.getElementAsFloat("PX_HIGH") if row.hasElement("PX_HIGH") else None
-high_val : The term 'high_val' is not recognized as the name of a cmdlet, function, script file, or operable program. Check the spelling of the 
-name, or if a path was included, verify that the path is correct and try again.
-At line:1 char:25
-+                         high_val = row.getElementAsFloat("PX_HIGH") i ...
-+                         ~~~~~~~~
-    + CategoryInfo          : ObjectNotFound: (high_val:String) [], CommandNotFoundException
-    + FullyQualifiedErrorId : CommandNotFoundException
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>                         low_val = row.getElementAsFloat("PX_LOW") if row.hasElement("PX_LOW") else None
-low_val : The term 'low_val' is not recognized as the name of a cmdlet, function, script file, or operable program. Check the spelling of the 
-name, or if a path was included, verify that the path is correct and try again.
-At line:1 char:25
-+                         low_val = row.getElementAsFloat("PX_LOW") if  ...
-+                         ~~~~~~~
-    + CategoryInfo          : ObjectNotFound: (low_val:String) [], CommandNotFoundException
-    + FullyQualifiedErrorId : CommandNotFoundException
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1> 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>                         rows.append(
->>                             {                                                                                                                   
->>                                 "security": security,                                                                                           
->>                                 "date": date_val,                                                                                               
->>                                 "PX_HIGH": high_val,                                                                                            
->>                                 "PX_LOW": low_val,                                                                                              
->>                             }                                                                                                                   
->>                         )                                                                                                                       
-At line:3 char:43
-+                                 "security": security,
-+                                           ~
-Unexpected token ':' in expression or statement.
-At line:6 char:51
-+                                 "PX_LOW": low_val,
-+                                                   ~
-Missing expression after ',' in pipeline element.
-    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException
-    + FullyQualifiedErrorId : UnexpectedToken
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1> 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>         if event.eventType() == blpapi.Event.RESPONSE:                                                                                                                   
-At line:1 char:11
-+         if event.eventType() == blpapi.Event.RESPONSE:
-+           ~
-Missing '(' after 'if' in if statement.
-At line:1 char:28
-+         if event.eventType() == blpapi.Event.RESPONSE:
-+                            ~
-An expression was expected after '('.
-    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException
-    + FullyQualifiedErrorId : MissingOpenParenthesisInIfStatement
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>             break
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1> 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>     return pd.DataFrame(rows)                                                                                                                                            
-rows : The term 'rows' is not recognized as the name of a cmdlet, function, script file, or operable program. Check the spelling of the name, or 
-if a path was included, verify that the path is correct and try again.
-At line:1 char:25
-+     return pd.DataFrame(rows)
-+                         ~~~~
-    + CategoryInfo          : ObjectNotFound: (rows:String) [], CommandNotFoundException
-    + FullyQualifiedErrorId : CommandNotFoundException
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1> 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1> 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1> def build_20d_avg_range(df, securities):                                                                                                                                 
-At line:1 char:27
-+ def build_20d_avg_range(df, securities):
-+                           ~
-Missing argument in parameter list.
-    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException
-    + FullyQualifiedErrorId : MissingArgument
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>     reverse_map = {v: k for k, v in securities.items()}                                                                                                                  
-At line:1 char:54
-+     reverse_map = {v: k for k, v in securities.items()}
-+                                                      ~
-An expression was expected after '('.
-    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException
-    + FullyQualifiedErrorId : ExpectedExpression
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>     df["label"] = df["security"].map(reverse_map)                                                                                                                        
-reverse_map : The term 'reverse_map' is not recognized as the name of a cmdlet, function, script file, or operable program. Check the spelling of 
-the name, or if a path was included, verify that the path is correct and try again.
-At line:1 char:38
-+     df["label"] = df["security"].map(reverse_map)
-+                                      ~~~~~~~~~~~
-    + CategoryInfo          : ObjectNotFound: (reverse_map:String) [], CommandNotFoundException
-    + FullyQualifiedErrorId : CommandNotFoundException
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1> 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>     df = df.sort_values(["label", "date"]).copy()                                                                                                                        
-At line:1 char:26
-+     df = df.sort_values(["label", "date"]).copy()
-+                          ~
-Missing type name after '['.
-At line:1 char:33
-+     df = df.sort_values(["label", "date"]).copy()
-+                                 ~
-Missing argument in parameter list.
-    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException
-    + FullyQualifiedErrorId : MissingTypename
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>     df["daily_range"] = df["PX_HIGH"] - df["PX_LOW"]                                                                                                                     
-df[daily_range] : The term 'df[daily_range]' is not recognized as the name of a cmdlet, function, script file, or operable program. Check the 
-spelling of the name, or if a path was included, verify that the path is correct and try again.
-At line:1 char:5
-+     df["daily_range"] = df["PX_HIGH"] - df["PX_LOW"]
-+     ~~~~~~~~~~~~~~~~~
-    + CategoryInfo          : ObjectNotFound: (df[daily_range]:String) [], CommandNotFoundException
-    + FullyQualifiedErrorId : CommandNotFoundException
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>     df["range_20d_avg"] = (                                                                                                                                              
->>         df.groupby("label")["daily_range"]                                                                                                      
->>         .rolling(20)                                                                                                                            
-At line:2 char:43
-+         df.groupby("label")["daily_range"]
-+                                           ~
-Missing closing ')' in expression.
-    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException
-    + FullyQualifiedErrorId : MissingEndParenthesisInExpression
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>         .mean()
-At line:1 char:15
-+         .mean()
-+               ~
-An expression was expected after '('.
-    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException
-    + FullyQualifiedErrorId : ExpectedExpression
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>         .reset_index(level=0, drop=True)                                                                                                                                 
-At line:1 char:29
-+         .reset_index(level=0, drop=True)
-+                             ~
-Missing argument in parameter list.
-    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException
-    + FullyQualifiedErrorId : MissingArgument
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>     )
-At line:1 char:5
-+     )
-+     ~
-Unexpected token ')' in expression or statement.
-    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException
-    + FullyQualifiedErrorId : UnexpectedToken
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1> 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>     return df[
-df[ : The term 'df[' is not recognized as the name of a cmdlet, function, script file, or operable program. Check the spelling of the name, or if 
-a path was included, verify that the path is correct and try again.
-At line:1 char:12
-+     return df[
-+            ~~~
-    + CategoryInfo          : ObjectNotFound: (df[:String) [], CommandNotFoundException
-    + FullyQualifiedErrorId : CommandNotFoundException
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>         ["date", "label", "PX_HIGH", "PX_LOW", "daily_range", "range_20d_avg"]                                                                                           
-At line:1 char:10
-+         ["date", "label", "PX_HIGH", "PX_LOW", "daily_range", "range_ ...
-+          ~
-Missing type name after '['.
-At line:1 char:16
-+         ["date", "label", "PX_HIGH", "PX_LOW", "daily_range", "range_ ...
-+                ~
-Missing argument in parameter list.
-    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException
-    + FullyQualifiedErrorId : MissingTypename
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>     ]
-] : The term ']' is not recognized as the name of a cmdlet, function, script file, or operable program. Check the spelling of the name, or if a 
-path was included, verify that the path is correct and try again.
-At line:1 char:5
-+     ]
-+     ~
-    + CategoryInfo          : ObjectNotFound: (]:String) [], CommandNotFoundException
-    + FullyQualifiedErrorId : CommandNotFoundException
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1> 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1> 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1> def build_wide_output(df):                                                                                                                                               
-df : The term 'df' is not recognized as the name of a cmdlet, function, script file, or operable program. Check the spelling of the name, or if a 
-path was included, verify that the path is correct and try again.
-At line:1 char:23
-+ def build_wide_output(df):
-+                       ~~
-    + CategoryInfo          : ObjectNotFound: (df:String) [], CommandNotFoundException
-    + FullyQualifiedErrorId : CommandNotFoundException
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>     wide = df.pivot(index="date", columns="label", values="range_20d_avg").sort_index()                                                                                  
-At line:1 char:33
-+     wide = df.pivot(index="date", columns="label", values="range_20d_ ...
-+                                 ~
-Missing argument in parameter list.
-    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException
-    + FullyQualifiedErrorId : MissingArgument
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>     wide.reset_index(inplace=True)                                                                                                                                       
-inplace=True : The term 'inplace=True' is not recognized as the name of a cmdlet, function, script file, or operable program. Check the spelling 
-of the name, or if a path was included, verify that the path is correct and try again.
-At line:1 char:22
-+     wide.reset_index(inplace=True)
-+                      ~~~~~~~~~~~~
-    + CategoryInfo          : ObjectNotFound: (inplace=True:String) [], CommandNotFoundException
-    + FullyQualifiedErrorId : CommandNotFoundException
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>     return wide
-wide : The term 'wide' is not recognized as the name of a cmdlet, function, script file, or operable program. Check the spelling of the name, or 
-if a path was included, verify that the path is correct and try again.
-At line:1 char:12
-+     return wide
-+            ~~~~
-    + CategoryInfo          : ObjectNotFound: (wide:String) [], CommandNotFoundException
-    + FullyQualifiedErrorId : CommandNotFoundException
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1> 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1> 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1> def main():
-At line:1 char:10
-+ def main():
-+          ~
-An expression was expected after '('.
-    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException
-    + FullyQualifiedErrorId : ExpectedExpression
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>     session = start_session()                                                                                                                                            
-At line:1 char:29
-+     session = start_session()
-+                             ~
-An expression was expected after '('.
-    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException
-    + FullyQualifiedErrorId : ExpectedExpression
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>     try:
-try: : The term 'try:' is not recognized as the name of a cmdlet, function, script file, or operable program. Check the spelling of the name, or 
-if a path was included, verify that the path is correct and try again.
-At line:1 char:5
-+     try:
-+     ~~~~
-    + CategoryInfo          : ObjectNotFound: (try::String) [], CommandNotFoundException
-    + FullyQualifiedErrorId : CommandNotFoundException
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>         raw_df = fetch_historical_high_low(                                                                                                                              
->>             session=session,                                                                                                                    
->>             securities=SECURITIES,                                                                                                              
->>             fields=FIELDS,                                                                                                                      
->>             start_date=START_DATE,                                                                                                              
->>             end_date=END_DATE,                                                                                                                  
->>         )                                                                                                                                       
-At line:2 char:28
-+             session=session,
-+                            ~
-Missing argument in parameter list.
-At line:6 char:31
-+             end_date=END_DATE,
-+                               ~
-Missing expression after ',' in pipeline element.
-    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException
-    + FullyQualifiedErrorId : MissingArgument
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1> 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>         result_long = build_20d_avg_range(raw_df, SECURITIES)                                                                                                            
-At line:1 char:49
-+         result_long = build_20d_avg_range(raw_df, SECURITIES)
-+                                                 ~
-Missing argument in parameter list.
-    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException
-    + FullyQualifiedErrorId : MissingArgument
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>         result_wide = build_wide_output(result_long)                                                                                                                     
-result_long : The term 'result_long' is not recognized as the name of a cmdlet, function, script file, or operable program. Check the spelling of 
-the name, or if a path was included, verify that the path is correct and try again.
-At line:1 char:41
-+         result_wide = build_wide_output(result_long)
-+                                         ~~~~~~~~~~~
-    + CategoryInfo          : ObjectNotFound: (result_long:String) [], CommandNotFoundException
-    + FullyQualifiedErrorId : CommandNotFoundException
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1> 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>         with pd.ExcelWriter("20d_avg_high_low_range.xlsx", engine="openpyxl") as writer:                                                                                 
-At line:1 char:59
-+         with pd.ExcelWriter("20d_avg_high_low_range.xlsx", engine="op ...
-+                                                           ~
-Missing expression after ','.
-At line:1 char:60
-+ ... .ExcelWriter("20d_avg_high_low_range.xlsx", engine="openpyxl") as wri ...
-+                                                 ~~~~~~~~~~~~~~~~~
-Unexpected token 'engine="openpyxl"' in expression or statement.
-At line:1 char:59
-+         with pd.ExcelWriter("20d_avg_high_low_range.xlsx", engine="op ...
-+                                                           ~
-Missing closing ')' in expression.
-At line:1 char:77
-+ ... ExcelWriter("20d_avg_high_low_range.xlsx", engine="openpyxl") as writ ...
-+                                                                 ~
-Unexpected token ')' in expression or statement.
-    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException
-    + FullyQualifiedErrorId : MissingExpressionAfterToken
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>             result_long.to_excel(writer, sheet_name="long_data", index=False)                                                                                            
-At line:1 char:40
-+             result_long.to_excel(writer, sheet_name="long_data", inde ...
-+                                        ~
-Missing argument in parameter list.
-    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException
-    + FullyQualifiedErrorId : MissingArgument
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>             result_wide.to_excel(writer, sheet_name="20d_avg_matrix", index=False)                                                                                       
-At line:1 char:40
-+             result_wide.to_excel(writer, sheet_name="20d_avg_matrix", ...
-+                                        ~
-Missing argument in parameter list.
-    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException
-    + FullyQualifiedErrorId : MissingArgument
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1> 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>         print("Saved: 20d_avg_high_low_range.xlsx")                                                                                                                      
-Unable to initialize device PRN
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>         print(result_wide.tail())                                                                                                                                        
-At line:1 char:32
-+         print(result_wide.tail())
-+                                ~
-An expression was expected after '('.
-    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException
-    + FullyQualifiedErrorId : ExpectedExpression
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1> 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>     finally:
-finally: : The term 'finally:' is not recognized as the name of a cmdlet, function, script file, or operable program. Check the spelling of the 
-name, or if a path was included, verify that the path is correct and try again.
-At line:1 char:5
-+     finally:
-+     ~~~~~~~~
-    + CategoryInfo          : ObjectNotFound: (finally::String) [], CommandNotFoundException
-    + FullyQualifiedErrorId : CommandNotFoundException
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>         session.stop()
-
-At line:1 char:22
-+         session.stop()
-+                      ~
-An expression was expected after '('.
-    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException
-    + FullyQualifiedErrorId : ExpectedExpression
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1> 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1> 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1> if __name__ == "__main__":                                                                                                                                               
-At line:1 char:3
-+ if __name__ == "__main__":
-+   ~
-Missing '(' after 'if' in if statement.
-    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException
-    + FullyQualifiedErrorId : MissingOpenParenthesisInIfStatement
- 
-PS C:\Users\thomas.perron\AppData\Local\Temp\13f67ead-0fbd-4563-84d2-da490181614d_blpapi-3.25.11.1.zip.14d\blpapi-3.25.11.1>     main()
