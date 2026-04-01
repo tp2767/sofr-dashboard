@@ -1,0 +1,142 @@
+import blpapi
+import pandas as pd
+import datetime as dt
+
+HOST = "127.0.0.1"
+PORT = 8194
+
+SECURITIES = {
+    "1Y1Y": "S0042FS 1Y1Y BLC Curncy",
+    "2Y2Y": "S0042FS 2Y2Y BLC Curncy",
+    "5Y5Y": "S0042FS 5Y5Y BLC Curncy",
+    "10Y10Y": "S0042FS 10Y10Y BLC Curncy",
+    "SFR5": "SFR5 Comdty",
+    "SFR9": "SFR9 Comdty",
+    "SFR13": "SFR 13 Comdty",
+}
+
+FIELDS = ["PX_HIGH", "PX_LOW"]
+START_DATE = "20240101"
+END_DATE = dt.datetime.today().strftime("%Y%m%d")
+
+
+def start_session():
+    options = blpapi.SessionOptions()
+    options.setServerHost(HOST)
+    options.setServerPort(PORT)
+
+    session = blpapi.Session(options)
+    if not session.start():
+        raise RuntimeError("Failed to start Bloomberg session.")
+    if not session.openService("//blp/refdata"):
+        raise RuntimeError("Failed to open //blp/refdata.")
+    return session
+
+
+def fetch_historical_high_low(session, securities, fields, start_date, end_date):
+    service = session.getService("//blp/refdata")
+    request = service.createRequest("HistoricalDataRequest")
+
+    for sec in securities.values():
+        request.getElement("securities").appendValue(sec)
+
+    for field in fields:
+        request.getElement("fields").appendValue(field)
+
+    request.set("startDate", start_date)
+    request.set("endDate", end_date)
+    request.set("periodicitySelection", "DAILY")
+
+    session.sendRequest(request)
+
+    rows = []
+
+    while True:
+        event = session.nextEvent()
+        for msg in event:
+            if msg.hasElement("responseError"):
+                raise RuntimeError(f"Bloomberg response error: {msg}")
+
+            if msg.hasElement("securityData"):
+                sec_data = msg.getElement("securityData")
+                security = sec_data.getElementAsString("security")
+
+                # Security-level errors
+                if sec_data.hasElement("securityError"):
+                    print(f"Security error for {security}: {sec_data.getElement('securityError')}")
+
+                if sec_data.hasElement("fieldData"):
+                    field_data = sec_data.getElement("fieldData")
+                    for i in range(field_data.numValues()):
+                        row = field_data.getValueAsElement(i)
+
+                        date_val = pd.to_datetime(row.getElementAsDatetime("date"))
+                        high_val = row.getElementAsFloat("PX_HIGH") if row.hasElement("PX_HIGH") else None
+                        low_val = row.getElementAsFloat("PX_LOW") if row.hasElement("PX_LOW") else None
+
+                        rows.append(
+                            {
+                                "security": security,
+                                "date": date_val,
+                                "PX_HIGH": high_val,
+                                "PX_LOW": low_val,
+                            }
+                        )
+
+        if event.eventType() == blpapi.Event.RESPONSE:
+            break
+
+    return pd.DataFrame(rows)
+
+
+def build_20d_avg_range(df, securities):
+    reverse_map = {v: k for k, v in securities.items()}
+    df["label"] = df["security"].map(reverse_map)
+
+    df = df.sort_values(["label", "date"]).copy()
+    df["daily_range"] = df["PX_HIGH"] - df["PX_LOW"]
+    df["range_20d_avg"] = (
+        df.groupby("label")["daily_range"]
+        .rolling(20)
+        .mean()
+        .reset_index(level=0, drop=True)
+    )
+
+    return df[
+        ["date", "label", "PX_HIGH", "PX_LOW", "daily_range", "range_20d_avg"]
+    ]
+
+
+def build_wide_output(df):
+    wide = df.pivot(index="date", columns="label", values="range_20d_avg").sort_index()
+    wide.reset_index(inplace=True)
+    return wide
+
+
+def main():
+    session = start_session()
+    try:
+        raw_df = fetch_historical_high_low(
+            session=session,
+            securities=SECURITIES,
+            fields=FIELDS,
+            start_date=START_DATE,
+            end_date=END_DATE,
+        )
+
+        result_long = build_20d_avg_range(raw_df, SECURITIES)
+        result_wide = build_wide_output(result_long)
+
+        with pd.ExcelWriter("20d_avg_high_low_range.xlsx", engine="openpyxl") as writer:
+            result_long.to_excel(writer, sheet_name="long_data", index=False)
+            result_wide.to_excel(writer, sheet_name="20d_avg_matrix", index=False)
+
+        print("Saved: 20d_avg_high_low_range.xlsx")
+        print(result_wide.tail())
+
+    finally:
+        session.stop()
+
+
+if __name__ == "__main__":
+    main()
