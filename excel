@@ -1,1 +1,1 @@
-=MATCH(TEXT(VOL_LOOKUP!$B$1,"yyyy-mm-dd"),TEXT('1Y1Y'!$G$2:$G$1894,"yyyy-mm-dd"),0)
+=BDH("S0042FS 1Y1Y BLC Curncy","PX_HIGH","01/01/2019","04/2/2026")
