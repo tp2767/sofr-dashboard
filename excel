@@ -1,9 +1,1 @@
-Go back to your CALC sheet and use column A for the date match, not column G:
-
-B1: =IFERROR(AVERAGE(OFFSET('1Y1Y'!$M$2,MATCH(INT(VOL_LOOKUP!$B$1),INT('1Y1Y'!$A$2:$A$1894),0)-20,0,20,1)),"")
-
-And for the spot vol:
-
-C1: =IFERROR(INDEX('1Y1Y'!$M$2:$M$1894,MATCH(INT(VOL_LOOKUP!$B$1),INT('1Y1Y'!$A$2:$A$1894),0)),"")
-
-Use $A$ instead of $G$ in every formula. Column A has the clean dates. Try that one formula first and tell me what it returns.
+=MATCH(INT(VOL_LOOKUP!$B$1),INT('2Y1Y'!$A$2:$A$21894),0)
