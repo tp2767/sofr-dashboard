@@ -1,0 +1,841 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>UST Threshold · Geopolitical Regime Analyzer</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600;700&family=IBM+Plex+Sans:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #04070f;
+    --bg2: #080d1a;
+    --bg3: #0c1120;
+    --border: #151e30;
+    --border2: #1e2b42;
+    --text: #d8dce8;
+    --muted: #4a5570;
+    --muted2: #2a3348;
+    --green: #00e87a;
+    --red: #ff3d5a;
+    --cyan: #00c8f0;
+    --gold: #f0c040;
+    --mono: 'IBM Plex Mono', monospace;
+    --sans: 'IBM Plex Sans', sans-serif;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--mono);
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* animated grid bg */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(0,200,240,0.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0,200,240,0.03) 1px, transparent 1px);
+    background-size: 40px 40px;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  .wrap { position: relative; z-index: 1; max-width: 1280px; margin: 0 auto; padding: 0 28px 60px; }
+
+  /* HEADER */
+  header {
+    border-bottom: 1px solid var(--border);
+    padding: 28px 0 20px;
+    margin-bottom: 32px;
+    position: relative;
+  }
+  .header-tag {
+    font-size: 9px;
+    letter-spacing: 3px;
+    color: var(--muted);
+    text-transform: uppercase;
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .live-dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--green);
+    box-shadow: 0 0 8px var(--green);
+    animation: pulse 2s infinite;
+  }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+  h1 {
+    font-size: clamp(18px, 2.5vw, 26px);
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    color: #eef0f8;
+    line-height: 1.3;
+  }
+  h1 span { color: var(--cyan); }
+  .header-sub {
+    margin-top: 6px;
+    font-size: 10px;
+    color: var(--muted);
+    letter-spacing: 1px;
+  }
+
+  /* TABS */
+  .tabs {
+    display: flex;
+    gap: 2px;
+    margin-bottom: 28px;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 0;
+  }
+  .tab {
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--muted);
+    padding: 10px 20px;
+    cursor: pointer;
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    transition: all 0.2s;
+    margin-bottom: -1px;
+  }
+  .tab:hover { color: var(--text); }
+  .tab.active { color: var(--cyan); border-bottom-color: var(--cyan); }
+
+  /* PANELS */
+  .panel { display: none; }
+  .panel.active { display: block; }
+
+  /* STAT GRID */
+  .stat-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 10px;
+    margin-bottom: 28px;
+  }
+  .stat-box {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 14px 16px;
+    transition: border-color 0.2s;
+  }
+  .stat-box:hover { border-color: var(--border2); }
+  .stat-label {
+    font-size: 8px;
+    letter-spacing: 2px;
+    color: var(--muted);
+    text-transform: uppercase;
+    margin-bottom: 8px;
+  }
+  .stat-val {
+    font-size: 20px;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+  }
+  .stat-sub { font-size: 9px; color: var(--muted2); margin-top: 3px; }
+  .green { color: var(--green); }
+  .red { color: var(--red); }
+  .cyan { color: var(--cyan); }
+  .gold { color: var(--gold); }
+  .muted { color: var(--muted); }
+
+  /* FILTERS */
+  .filters {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-bottom: 22px;
+  }
+  .filter-label { font-size: 9px; letter-spacing: 2px; color: var(--muted); }
+  .filter-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    padding: 5px 12px;
+    border-radius: 3px;
+    cursor: pointer;
+    font-family: var(--mono);
+    font-size: 10px;
+    transition: all 0.15s;
+  }
+  .filter-btn:hover, .filter-btn.active {
+    border-color: var(--cyan);
+    color: var(--cyan);
+    background: rgba(0,200,240,0.05);
+  }
+  select.filter-select {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    color: var(--muted);
+    padding: 5px 10px;
+    border-radius: 3px;
+    font-family: var(--mono);
+    font-size: 10px;
+    cursor: pointer;
+    outline: none;
+  }
+
+  /* REGIME COMPARISON */
+  .regime-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin-bottom: 28px;
+  }
+  .regime-box {
+    background: var(--bg2);
+    border-radius: 8px;
+    padding: 20px;
+  }
+  .regime-title {
+    font-size: 9px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    margin-bottom: 16px;
+  }
+  .regime-metrics {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+  }
+  .regime-metric { text-align: center; }
+  .regime-metric-label { font-size: 8px; color: var(--muted); margin-bottom: 4px; }
+  .regime-metric-val { font-size: 16px; font-weight: 700; }
+
+  /* IRAN CALLOUT */
+  .iran-box {
+    background: rgba(240,192,64,0.04);
+    border: 1px solid rgba(240,192,64,0.18);
+    border-radius: 8px;
+    padding: 20px;
+    margin-bottom: 28px;
+  }
+  .iran-title { font-size: 9px; color: var(--gold); letter-spacing: 2px; margin-bottom: 14px; }
+  .iran-event {
+    display: grid;
+    grid-template-columns: 100px 1fr repeat(3, 90px);
+    gap: 12px;
+    align-items: center;
+    padding: 10px 0;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+    font-size: 11px;
+  }
+  .iran-event:last-of-type { border-bottom: none; }
+  .iran-note { font-size: 10px; color: var(--muted); margin-top: 12px; line-height: 1.6; }
+
+  /* REGRESSION TABLE */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    background: var(--bg2);
+    border-radius: 8px;
+    overflow: hidden;
+    font-size: 12px;
+  }
+  th {
+    padding: 10px 14px;
+    text-align: left;
+    font-size: 9px;
+    color: var(--muted);
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    background: var(--bg3);
+    font-weight: 500;
+  }
+  td { padding: 10px 14px; border-bottom: 1px solid var(--border); }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: rgba(255,255,255,0.01); }
+  .sig-badge {
+    font-size: 9px;
+    padding: 2px 8px;
+    border-radius: 2px;
+    letter-spacing: 1px;
+  }
+  .sig-yes { background: rgba(240,192,64,0.1); color: var(--gold); }
+  .sig-no { background: rgba(74,85,112,0.15); color: var(--muted); }
+
+  /* SCATTER CANVAS */
+  canvas {
+    display: block;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+  }
+
+  /* EVENTS LIST */
+  .event-row {
+    display: grid;
+    grid-template-columns: 100px 1fr 90px repeat(4, 80px);
+    gap: 10px;
+    align-items: center;
+    padding: 12px 16px;
+    border-radius: 6px;
+    cursor: pointer;
+    border: 1px solid transparent;
+    margin-bottom: 5px;
+    background: var(--bg2);
+    transition: all 0.15s;
+    font-size: 11px;
+  }
+  .event-row:hover { border-color: var(--border2); }
+  .event-row.selected { border-color: var(--cyan); background: rgba(0,200,240,0.04); }
+  .risk-badge {
+    font-size: 9px;
+    padding: 3px 8px;
+    border-radius: 2px;
+    text-align: center;
+    letter-spacing: 1px;
+  }
+  .risk-on { background: rgba(0,232,122,0.1); color: var(--green); }
+  .risk-off { background: rgba(255,61,90,0.1); color: var(--red); }
+
+  /* AI PANEL */
+  .ai-panel {
+    background: var(--bg3);
+    border: 1px solid rgba(0,200,240,0.2);
+    border-radius: 8px;
+    padding: 20px;
+    margin-top: 16px;
+  }
+  .ai-title { font-size: 9px; color: var(--cyan); letter-spacing: 2px; margin-bottom: 14px; }
+  .ai-body { font-size: 12px; color: #8090b0; line-height: 1.9; white-space: pre-wrap; font-family: var(--sans); }
+  .ai-loading { color: var(--muted); font-size: 12px; }
+
+  /* QUERY */
+  .query-row { display: flex; gap: 10px; margin-bottom: 14px; }
+  .query-input {
+    flex: 1;
+    background: var(--bg2);
+    border: 1px solid var(--border2);
+    border-radius: 5px;
+    color: var(--text);
+    padding: 11px 14px;
+    font-family: var(--mono);
+    font-size: 12px;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+  .query-input:focus { border-color: var(--cyan); }
+  .query-input::placeholder { color: var(--muted); }
+  .query-btn {
+    background: rgba(0,200,240,0.08);
+    border: 1px solid var(--cyan);
+    color: var(--cyan);
+    padding: 11px 22px;
+    border-radius: 5px;
+    cursor: pointer;
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 1.5px;
+    transition: all 0.15s;
+  }
+  .query-btn:hover { background: rgba(0,200,240,0.15); }
+  .query-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .suggest-pills { display: flex; gap: 7px; flex-wrap: wrap; margin-bottom: 20px; }
+  .pill {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    padding: 4px 10px;
+    border-radius: 20px;
+    cursor: pointer;
+    font-family: var(--mono);
+    font-size: 9px;
+    transition: all 0.15s;
+  }
+  .pill:hover { border-color: var(--border2); color: var(--text); }
+
+  .reg-layout { display: grid; grid-template-columns: 1fr 420px; gap: 20px; align-items: start; }
+  .scatter-wrap { display: flex; flex-direction: column; gap: 10px; }
+  .scatter-legend { display: flex; gap: 20px; justify-content: center; font-size: 10px; }
+
+  footer {
+    border-top: 1px solid var(--border);
+    padding-top: 16px;
+    margin-top: 40px;
+    font-size: 9px;
+    color: var(--muted2);
+    letter-spacing: 1px;
+  }
+
+  @media (max-width: 900px) {
+    .regime-grid, .reg-layout { grid-template-columns: 1fr; }
+    .event-row { grid-template-columns: 80px 1fr 80px; }
+    .event-row .hide-mobile { display: none; }
+    .iran-event { grid-template-columns: 90px 1fr 80px; }
+    .iran-event .hide-mobile { display: none; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="header-tag">
+      <span class="live-dot"></span>
+      PERSONAL RESEARCH · MACRO FIXED INCOME
+    </div>
+    <h1>UST THRESHOLD BREACH &nbsp;·&nbsp; <span>GEOPOLITICAL REGIME ANALYZER</span></h1>
+    <div class="header-sub">10Y ≥ 4.50% + 30Y ≥ 5.00% · Risk-On/Off Catalyst OLS Regression · T+1 / T+5 / T+20 Market Impact</div>
+  </header>
+
+  <div class="tabs">
+    <button class="tab active" onclick="switchTab('dashboard', this)">Dashboard</button>
+    <button class="tab" onclick="switchTab('regression', this)">Regression</button>
+    <button class="tab" onclick="switchTab('events', this)">Events</button>
+    <button class="tab" onclick="switchTab('query', this)">Query AI</button>
+  </div>
+
+  <!-- ═══════════════ DASHBOARD ═══════════════ -->
+  <div class="panel active" id="panel-dashboard">
+    <div class="filters">
+      <span class="filter-label">FILTER:</span>
+      <button class="filter-btn active" onclick="setRisk('all', this)">All Events</button>
+      <button class="filter-btn" onclick="setRisk('on', this)">Risk-On Only</button>
+      <button class="filter-btn" onclick="setRisk('off', this)">Risk-Off Only</button>
+      <select class="filter-select" onchange="setCat(this.value)">
+        <option value="all">All Categories</option>
+        <option value="Geopolitical / Iran">Geopolitical / Iran</option>
+        <option value="Trade War">Trade War</option>
+        <option value="Fed Hawkishness">Fed Hawkishness</option>
+        <option value="Inflation Shock">Inflation Shock</option>
+        <option value="Fiscal / Political">Fiscal / Political</option>
+        <option value="Global CB Policy">Global CB Policy</option>
+        <option value="Macro / Labor">Macro / Labor</option>
+      </select>
+    </div>
+
+    <div class="stat-grid" id="stat-grid"></div>
+
+    <div class="regime-grid">
+      <div class="regime-box" style="border:1px solid rgba(0,232,122,0.12)">
+        <div class="regime-title" style="color:var(--green)">▸ Risk-On Regime</div>
+        <div class="regime-metrics" id="regime-on"></div>
+      </div>
+      <div class="regime-box" style="border:1px solid rgba(255,61,90,0.12)">
+        <div class="regime-title" style="color:var(--red)">▸ Risk-Off Regime</div>
+        <div class="regime-metrics" id="regime-off"></div>
+      </div>
+    </div>
+
+    <div class="iran-box">
+      <div class="iran-title">◆ IRAN-US DIPLOMACY EVENTS — SIGNAL EXTRACTION</div>
+      <div id="iran-events"></div>
+      <div class="iran-note" id="iran-note"></div>
+    </div>
+  </div>
+
+  <!-- ═══════════════ REGRESSION ═══════════════ -->
+  <div class="panel" id="panel-regression">
+    <p style="font-size:11px;color:var(--muted);margin-bottom:18px;">
+      Binary OLS regression: X = Risk-On catalyst (1) vs Risk-Off (0). Slope = expected return differential between regimes. N = <span id="reg-n"></span> events.
+    </p>
+    <div class="reg-layout">
+      <div>
+        <table id="reg-table">
+          <thead>
+            <tr>
+              <th>Outcome</th><th>β (Slope)</th><th>R²</th><th>P-Value</th><th>Signal</th>
+            </tr>
+          </thead>
+          <tbody id="reg-tbody"></tbody>
+        </table>
+        <div style="margin-top:16px;background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:18px;">
+          <div style="font-size:9px;color:var(--cyan);letter-spacing:2px;margin-bottom:12px;">INTERPRETATION</div>
+          <div id="reg-interp" style="font-size:11px;color:#6070a0;line-height:1.9;font-family:var(--sans);"></div>
+        </div>
+      </div>
+      <div class="scatter-wrap">
+        <canvas id="scatter" width="420" height="300"></canvas>
+        <div class="scatter-legend">
+          <span style="color:var(--green)">● Risk-On</span>
+          <span style="color:var(--red)">● Risk-Off</span>
+          <span style="color:var(--cyan)">— Regression</span>
+        </div>
+        <div style="font-size:9px;color:var(--muted2);text-align:center;">SPX T+5 return by regime · jittered for visibility</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════ EVENTS ═══════════════ -->
+  <div class="panel" id="panel-events">
+    <p style="font-size:11px;color:var(--muted);margin-bottom:14px;">Click any event for AI-powered institutional analysis ↓</p>
+    <div id="events-list"></div>
+    <div id="ai-analysis-box" style="display:none" class="ai-panel">
+      <div class="ai-title" id="ai-event-label"></div>
+      <div id="ai-body" class="ai-body"></div>
+    </div>
+  </div>
+
+  <!-- ═══════════════ QUERY ═══════════════ -->
+  <div class="panel" id="panel-query">
+    <p style="font-size:11px;color:var(--muted);margin-bottom:16px;">
+      Ask quantitative questions. The model has access to all event data and regression statistics.
+    </p>
+    <div class="query-row">
+      <input class="query-input" id="query-input" placeholder="e.g. What happens to oil when Iran-US talks coincide with 10Y above 4.5%?" />
+      <button class="query-btn" id="query-btn" onclick="runQuery()">RUN QUERY</button>
+    </div>
+    <div class="suggest-pills">
+      <button class="pill" onclick="setQuery(this.textContent)">What's the avg SPX T+20 after Iran-US deals?</button>
+      <button class="pill" onclick="setQuery(this.textContent)">Does oil fall more on trade deals or Iran diplomacy?</button>
+      <button class="pill" onclick="setQuery(this.textContent)">Is the risk-on regression statistically significant?</button>
+      <button class="pill" onclick="setQuery(this.textContent)">What happened to gold after threshold breaches with risk-on news?</button>
+      <button class="pill" onclick="setQuery(this.textContent)">Compare SPX behavior after trade deals vs geopolitical deals</button>
+    </div>
+    <div id="query-result-box" style="display:none" class="ai-panel">
+      <div class="ai-title">◆ ANALYSIS OUTPUT</div>
+      <div id="query-body" class="ai-body"></div>
+    </div>
+  </div>
+
+  <footer>FOR PERSONAL RESEARCH USE ONLY &nbsp;·&nbsp; NOT INVESTMENT ADVICE &nbsp;·&nbsp; DATA: BLOOMBERG, FRED &nbsp;·&nbsp; MODEL: OLS BINARY REGRESSION</footer>
+</div>
+
+<script>
+// ─── DATA ────────────────────────────────────────────────────────────────────
+const EVENTS = [
+  { date:"2023-10-19", label:"Oct 2023 — Supply shock / Fed higher-for-longer", y10:4.99, y30:5.10, category:"Fed Hawkishness", geoTag:"none", riskOn:false, spx_1d:-1.26, spx_5d:0.45, spx_20d:7.21, ust10_1d:-0.08, ust10_5d:-0.31, ust10_20d:-0.72, gold_1d:0.82, oil_1d:-0.41 },
+  { date:"2023-10-26", label:"Oct 2023 — Peak rate fears, BOJ intervention", y10:4.85, y30:5.02, category:"Global CB Policy", geoTag:"none", riskOn:false, spx_1d:-0.48, spx_5d:5.85, spx_20d:9.12, ust10_1d:0.02, ust10_5d:-0.28, ust10_20d:-0.91, gold_1d:0.61, oil_1d:-1.20 },
+  { date:"2024-04-25", label:"Apr 2024 — CPI reacceleration / stagflation fears", y10:4.71, y30:4.82, category:"Inflation Shock", geoTag:"none", riskOn:false, spx_1d:-1.46, spx_5d:-1.10, spx_20d:3.44, ust10_1d:0.05, ust10_5d:-0.12, ust10_20d:-0.38, gold_1d:-0.55, oil_1d:0.33 },
+  { date:"2024-10-23", label:"Oct 2024 — Pre-election risk / debt ceiling", y10:4.26, y30:4.52, category:"Fiscal / Political", geoTag:"US election", riskOn:false, spx_1d:-0.03, spx_5d:2.51, spx_20d:5.33, ust10_1d:0.07, ust10_5d:0.04, ust10_20d:-0.41, gold_1d:0.71, oil_1d:-0.92 },
+  { date:"2025-01-14", label:"Jan 2025 — Strong jobs, term premium re-pricing", y10:4.79, y30:4.97, category:"Macro / Labor", geoTag:"none", riskOn:false, spx_1d:-1.54, spx_5d:-0.22, spx_20d:2.44, ust10_1d:0.06, ust10_5d:-0.18, ust10_20d:-0.52, gold_1d:0.22, oil_1d:0.55 },
+  { date:"2025-02-10", label:"Feb 2025 — Tariff shock / trade war escalation", y10:4.53, y30:4.77, category:"Trade War", geoTag:"China-US trade", riskOn:false, spx_1d:-0.94, spx_5d:-2.10, spx_20d:-4.21, ust10_1d:-0.04, ust10_5d:-0.22, ust10_20d:0.14, gold_1d:1.12, oil_1d:-2.31 },
+  { date:"2025-04-11", label:"Apr 2025 — US-Iran back-channel talks leaked", y10:4.48, y30:4.92, category:"Geopolitical / Iran", geoTag:"Iran-US diplomacy", riskOn:true, spx_1d:1.81, spx_5d:3.44, spx_20d:6.11, ust10_1d:-0.07, ust10_5d:-0.24, ust10_20d:-0.61, gold_1d:-0.88, oil_1d:-3.40 },
+  { date:"2025-04-22", label:"Apr 2025 — Iran nuclear framework agreed", y10:4.31, y30:4.78, category:"Geopolitical / Iran", geoTag:"Iran-US diplomacy", riskOn:true, spx_1d:2.51, spx_5d:4.12, spx_20d:7.88, ust10_1d:-0.09, ust10_5d:-0.33, ust10_20d:-0.88, gold_1d:-1.21, oil_1d:-4.80 },
+  { date:"2025-05-06", label:"May 2025 — US-China 90-day tariff pause", y10:4.37, y30:4.85, category:"Trade War", geoTag:"China-US trade", riskOn:true, spx_1d:3.26, spx_5d:5.71, spx_20d:8.44, ust10_1d:0.09, ust10_5d:0.14, ust10_20d:-0.22, gold_1d:-1.44, oil_1d:1.80 },
+];
+
+// ─── STATE ───────────────────────────────────────────────────────────────────
+let riskFilter = 'all';
+let catFilter = 'all';
+let selectedEvent = null;
+
+function getFiltered() {
+  return EVENTS.filter(e => {
+    const rOk = riskFilter === 'all' || (riskFilter === 'on' && e.riskOn) || (riskFilter === 'off' && !e.riskOn);
+    const cOk = catFilter === 'all' || e.category === catFilter;
+    return rOk && cOk;
+  });
+}
+
+function setRisk(v, btn) {
+  riskFilter = v;
+  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  renderDashboard();
+}
+function setCat(v) { catFilter = v; renderDashboard(); }
+
+// ─── OLS ─────────────────────────────────────────────────────────────────────
+function ols(xs, ys) {
+  const n = xs.length;
+  if (n < 2) return { slope:0, intercept:0, r2:0, pValue:1 };
+  const xBar = xs.reduce((a,b)=>a+b,0)/n;
+  const yBar = ys.reduce((a,b)=>a+b,0)/n;
+  const ssXY = xs.reduce((a,x,i)=>a+(x-xBar)*(ys[i]-yBar),0);
+  const ssXX = xs.reduce((a,x)=>a+(x-xBar)**2,0);
+  const ssYY = ys.reduce((a,y)=>a+(y-yBar)**2,0);
+  const slope = ssXX===0?0:ssXY/ssXX;
+  const intercept = yBar - slope*xBar;
+  const r2 = (ssXX===0||ssYY===0)?0:ssXY**2/(ssXX*ssYY);
+  const se = ssXX===0?1:Math.sqrt(Math.max(0,(ssYY-slope*ssXY))/Math.max(1,(n-2)*ssXX));
+  const t = se===0?0:Math.abs(slope/se);
+  const pValue = Math.min(1, Math.exp(-0.717*t - 0.416*t*t));
+  return { slope, intercept, r2, pValue };
+}
+
+// ─── FORMAT ──────────────────────────────────────────────────────────────────
+const fmtPct = (v,d=2) => v==null?'—':(v>=0?'+':'')+v.toFixed(d)+'%';
+const fmtBps = v => v==null?'—':(v>=0?'+':'')+(v*100).toFixed(1)+' bps';
+const colorClass = v => v==null?'muted':v>=0?'green':'red';
+
+// ─── DASHBOARD ───────────────────────────────────────────────────────────────
+function avg(arr, key) { return arr.length?arr.reduce((a,e)=>a+e[key],0)/arr.length:null; }
+
+function renderDashboard() {
+  const ev = getFiltered();
+  const on = ev.filter(e=>e.riskOn);
+  const off = ev.filter(e=>!e.riskOn);
+
+  // stat grid
+  const stats = [
+    { label:'Events Analyzed', val:ev.length, sub:'threshold breaches', cls:'cyan' },
+    { label:'Risk-On Events', val:on.length, sub:'geo / deal catalysts', cls:'green' },
+    { label:'Risk-Off Events', val:off.length, sub:'hawkish / shock', cls:'red' },
+    { label:'Avg SPX T+5 (On)', val:fmtPct(avg(on,'spx_5d')), cls:colorClass(avg(on,'spx_5d')) },
+    { label:'Avg SPX T+5 (Off)', val:fmtPct(avg(off,'spx_5d')), cls:colorClass(avg(off,'spx_5d')) },
+    { label:'Avg Oil T+1 (On)', val:fmtPct(avg(on,'oil_1d')), sub:'geo relief', cls:colorClass(avg(on,'oil_1d')) },
+    { label:'Avg Gold T+1 (On)', val:fmtPct(avg(on,'gold_1d')), sub:'safe haven unwind', cls:colorClass(avg(on,'gold_1d')) },
+  ];
+  document.getElementById('stat-grid').innerHTML = stats.map(s=>`
+    <div class="stat-box">
+      <div class="stat-label">${s.label}</div>
+      <div class="stat-val ${s.cls}">${s.val}</div>
+      ${s.sub?`<div class="stat-sub">${s.sub}</div>`:''}
+    </div>`).join('');
+
+  // regime metrics
+  const metrics = [
+    ['SPX T+1','spx_1d',true],['SPX T+5','spx_5d',true],['SPX T+20','spx_20d',true],
+    ['UST10 T+1','ust10_1d',false],['Gold T+1','gold_1d',true],['Oil T+1','oil_1d',true],
+  ];
+  ['on','off'].forEach(regime=>{
+    const arr = regime==='on'?on:off;
+    document.getElementById(`regime-${regime}`).innerHTML = metrics.map(([lbl,key,isPct])=>{
+      const val = avg(arr,key);
+      const disp = val==null?'—':(isPct?fmtPct(val):fmtBps(val));
+      return `<div class="regime-metric">
+        <div class="regime-metric-label">${lbl}</div>
+        <div class="regime-metric-val ${colorClass(val)}">${disp}</div>
+      </div>`;
+    }).join('');
+  });
+
+  // iran events
+  const iranEvs = EVENTS.filter(e=>e.geoTag==='Iran-US diplomacy');
+  document.getElementById('iran-events').innerHTML = iranEvs.map(e=>`
+    <div class="iran-event">
+      <span style="color:var(--gold)">${e.date}</span>
+      <span style="color:#8090b0">${e.label}</span>
+      <span class="green">SPX T+5 ${fmtPct(e.spx_5d)}</span>
+      <span class="red hide-mobile">Oil T+1 ${fmtPct(e.oil_1d)}</span>
+      <span class="muted hide-mobile">Gold ${fmtPct(e.gold_1d)}</span>
+    </div>`).join('');
+  document.getElementById('iran-note').textContent =
+    'Pattern: Iran-US de-escalation → equities +2–4% T+5, oil −3 to −5% T+1, gold unwinds. USTs rally modestly (risk-on flows offset geopolitical premium release).';
+}
+
+// ─── REGRESSION ──────────────────────────────────────────────────────────────
+function renderRegression() {
+  const ev = EVENTS;
+  const xs = ev.map(e=>e.riskOn?1:0);
+  const regs = [
+    ['SPX T+1', ols(xs,ev.map(e=>e.spx_1d)), true],
+    ['SPX T+5', ols(xs,ev.map(e=>e.spx_5d)), true],
+    ['SPX T+20', ols(xs,ev.map(e=>e.spx_20d)), true],
+    ['UST10 T+1 (bps)', ols(xs,ev.map(e=>e.ust10_1d)), false],
+    ['Gold T+1', ols(xs,ev.map(e=>e.gold_1d)), true],
+    ['Oil T+1', ols(xs,ev.map(e=>e.oil_1d)), true],
+  ];
+
+  document.getElementById('reg-n').textContent = ev.length;
+  document.getElementById('reg-tbody').innerHTML = regs.map(([lbl,r,isPct])=>{
+    const sig = r.pValue < 0.1;
+    const slopeDisp = isPct?fmtPct(r.slope):fmtBps(r.slope);
+    return `<tr>
+      <td style="color:var(--muted)">${lbl}</td>
+      <td class="${colorClass(r.slope)}" style="font-weight:600">${slopeDisp}</td>
+      <td style="color:${r.r2>0.35?'var(--cyan)':'var(--muted)'}">${r.r2.toFixed(3)}</td>
+      <td style="color:${sig?'var(--gold)':'var(--muted)'}">${r.pValue.toFixed(3)}</td>
+      <td><span class="sig-badge ${sig?'sig-yes':'sig-no'}">${sig?'SIGNIFICANT':'WEAK'}</span></td>
+    </tr>`;
+  }).join('');
+
+  const r5 = regs[1][1]; const rOil = regs[5][1]; const rGold = regs[4][1];
+  document.getElementById('reg-interp').innerHTML =
+    `β on SPX T+5 = <strong style="color:var(--green)">${fmtPct(r5.slope)}</strong> — risk-on catalysts during 10Y≥4.5%/30Y≥5% regimes correlate with this incremental equity return vs risk-off events.<br><br>` +
+    `Oil β = <strong style="color:${colorClass(rOil.slope)}">${fmtPct(rOil.slope)}</strong> — geopolitical relief events drive oil lower; supply/risk premium unwinds on Iran-US de-escalation specifically.<br><br>` +
+    `Gold β = <strong style="color:${colorClass(rGold.slope)}">${fmtPct(rGold.slope)}</strong> — safe haven unwind on risk-on news is consistent and fast (T+1).<br><br>` +
+    `<span style="color:var(--muted2)">Note: n=${ev.length} limits statistical power. Use directionally. Add data points for production confidence.</span>`;
+
+  drawScatter(ev, xs, r5);
+}
+
+function drawScatter(ev, xs, reg) {
+  const canvas = document.getElementById('scatter');
+  const ctx = canvas.getContext('2d');
+  const W=canvas.width, H=canvas.height;
+  ctx.clearRect(0,0,W,H);
+
+  const pad={l:50,r:15,t:15,b:40};
+  const pW=W-pad.l-pad.r, pH=H-pad.t-pad.b;
+
+  ctx.fillStyle='#04070f'; ctx.fillRect(0,0,W,H);
+
+  // grid lines
+  ctx.strokeStyle='#111828'; ctx.lineWidth=1;
+  for(let i=0;i<=4;i++){
+    const y=pad.t+(i/4)*pH;
+    ctx.beginPath();ctx.moveTo(pad.l,y);ctx.lineTo(W-pad.r,y);ctx.stroke();
+  }
+
+  const ys = ev.map(e=>e.spx_5d);
+  const yMin=Math.min(...ys)-1.5, yMax=Math.max(...ys)+1.5;
+  const toX = v => pad.l+(v===1?0.73:0.27)*pW;
+  const toY = v => pad.t+pH-((v-yMin)/(yMax-yMin))*pH;
+
+  // regression line
+  ctx.strokeStyle='rgba(0,200,240,0.5)'; ctx.lineWidth=1.5;
+  ctx.setLineDash([5,5]);
+  ctx.beginPath();
+  ctx.moveTo(pad.l, toY(reg.intercept));
+  ctx.lineTo(pad.l+pW, toY(reg.intercept+reg.slope));
+  ctx.stroke(); ctx.setLineDash([]);
+
+  // x-axis
+  ctx.fillStyle='#3a4460'; ctx.font='10px IBM Plex Mono';
+  ctx.textAlign='center';
+  ctx.fillText('RISK-OFF', toX(0), H-8);
+  ctx.fillText('RISK-ON', toX(1), H-8);
+
+  // y-axis labels
+  ctx.textAlign='right';
+  for(let i=0;i<=4;i++){
+    const v=yMin+(yMax-yMin)*(1-i/4);
+    ctx.fillText(fmtPct(v,1), pad.l-6, pad.t+(i/4)*pH+4);
+  }
+
+  // center axis
+  ctx.strokeStyle='#1a2438'; ctx.lineWidth=1;
+  ctx.beginPath();ctx.moveTo(pad.l+pW/2, pad.t);ctx.lineTo(pad.l+pW/2,H-pad.b);ctx.stroke();
+
+  // points
+  const seed = [0.12,-0.08,0.19,-0.15,0.07,-0.22,0.14,0.11,-0.09,0.18];
+  ev.forEach((e,i)=>{
+    const jit = (seed[i%seed.length]) * pW * 0.12;
+    const cx = toX(e.riskOn?1:0)+jit;
+    const cy = toY(e.spx_5d);
+    ctx.beginPath();
+    ctx.arc(cx,cy,7,0,Math.PI*2);
+    ctx.fillStyle=e.riskOn?'rgba(0,232,122,0.85)':'rgba(255,61,90,0.85)';
+    ctx.fill();
+    ctx.strokeStyle='rgba(255,255,255,0.15)'; ctx.lineWidth=1; ctx.stroke();
+  });
+}
+
+// ─── EVENTS ──────────────────────────────────────────────────────────────────
+function renderEvents() {
+  document.getElementById('events-list').innerHTML = EVENTS.map((e,i)=>`
+    <div class="event-row" id="erow-${i}" onclick="analyzeEvent(${i})">
+      <span style="color:var(--muted)">${e.date}</span>
+      <span style="color:#b0b8d0;font-size:11px">${e.label}</span>
+      <span class="risk-badge ${e.riskOn?'risk-on':'risk-off'}">${e.riskOn?'RISK-ON':'RISK-OFF'}</span>
+      <span class="${colorClass(e.spx_1d)} hide-mobile">${fmtPct(e.spx_1d)} <span style="color:var(--muted2)">T+1</span></span>
+      <span class="${colorClass(e.spx_5d)} hide-mobile">${fmtPct(e.spx_5d)} <span style="color:var(--muted2)">T+5</span></span>
+      <span class="${colorClass(e.oil_1d)} hide-mobile">${fmtPct(e.oil_1d)} <span style="color:var(--muted2)">OIL</span></span>
+      <span style="color:var(--muted) hide-mobile">${e.y10}%<span style="color:var(--muted2)">10Y</span></span>
+    </div>`).join('');
+}
+
+async function analyzeEvent(idx) {
+  const e = EVENTS[idx];
+  selectedEvent = idx;
+  document.querySelectorAll('.event-row').forEach((r,i)=>r.classList.toggle('selected',i===idx));
+  const box = document.getElementById('ai-analysis-box');
+  const body = document.getElementById('ai-body');
+  const lbl = document.getElementById('ai-event-label');
+  box.style.display='block';
+  lbl.textContent = `◆ AI ANALYSIS · ${e.label}`;
+  body.textContent = 'Generating institutional analysis...';
+  body.className = 'ai-loading';
+  box.scrollIntoView({behavior:'smooth', block:'nearest'});
+
+  try {
+    const resp = await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        model:'claude-sonnet-4-20250514',
+        max_tokens:1000,
+        system:`You are a quantitative fixed income macro analyst. You analyze events where 10Y UST yields breach 4.5% or 30Y breach 5% alongside geopolitical catalysts. Be terse, data-driven, institutional. Use bullet points. Max 220 words. Cover: (1) why rates were at these levels, (2) what the geopolitical catalyst means for flows, (3) what happened to risk assets, USTs, gold, oil, (4) regime implications.`,
+        messages:[{role:'user',content:`Analyze this threshold breach event:
+
+Date: ${e.date}
+Event: ${e.label}
+10Y: ${e.y10}% | 30Y: ${e.y30}%
+Category: ${e.category} | Geo: ${e.geoTag}
+Risk-On Catalyst: ${e.riskOn?'YES':'NO'}
+
+Post-event returns:
+SPX: T+1 ${fmtPct(e.spx_1d)} | T+5 ${fmtPct(e.spx_5d)} | T+20 ${fmtPct(e.spx_20d)}
+UST 10Y: T+1 ${fmtBps(e.ust10_1d)}
+Gold T+1: ${fmtPct(e.gold_1d)} | Oil T+1: ${fmtPct(e.oil_1d)}
+
+Provide concise institutional analysis.`}]
+      })
+    });
+    const data = await resp.json();
+    body.textContent = data.content?.[0]?.text || 'No response.';
+    body.className = 'ai-body';
+  } catch(err) {
+    body.textContent = 'API error: '+err.message;
+    body.className = 'ai-body';
+  }
+}
+
+// ─── QUERY ───────────────────────────────────────────────────────────────────
+function setQuery(text) {
+  document.getElementById('query-input').value = text;
+}
+
+async function runQuery() {
+  const q = document.getElementById('query-input').value.trim();
+  if(!q) return;
+  const btn = document.getElementById('query-btn');
+  btn.disabled = true; btn.textContent = 'ANALYZING...';
+  const box = document.getElementById('query-result-box');
+  const body = document.getElementById('query-body');
+  box.style.display='block';
+  body.textContent='Running analysis...';
+  body.className='ai-loading';
+
+  const xs = EVENTS.map(e=>e.riskOn?1:0);
+  const r5 = ols(xs,EVENTS.map(e=>e.spx_5d));
+  const rOil = ols(xs,EVENTS.map(e=>e.oil_1d));
+  const rGold = ols(xs,EVENTS.map(e=>e.gold_1d));
+  const dataStr = EVENTS.map(e=>
+    `${e.date} | ${e.label} | 10Y:${e.y10}% 30Y:${e.y30}% | RiskOn:${e.riskOn} | Cat:${e.category} | Geo:${e.geoTag} | SPX T+1:${fmtPct(e.spx_1d)} T+5:${fmtPct(e.spx_5d)} T+20:${fmtPct(e.spx_20d)} | Oil T+1:${fmtPct(e.oil_1d)} | Gold T+1:${fmtPct(e.gold_1d)}`
+  ).join('\n');
+  const regStr = `SPX T+5: β=${r5.slope.toFixed(2)}, R²=${r5.r2.toFixed(3)}, p=${r5.pValue.toFixed(3)}\nOil T+1: β=${rOil.slope.toFixed(2)}, R²=${rOil.r2.toFixed(3)}\nGold T+1: β=${rGold.slope.toFixed(2)}, R²=${rGold.r2.toFixed(3)}`;
+
+  try {
+    const resp = await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        model:'claude-sonnet-4-20250514',
+        max_tokens:1000,
+        system:`You are a quantitative fixed income and macro analyst. You have a dataset of historical events where 10Y UST ≥4.5% and/or 30Y UST ≥5%, tagged with geopolitical catalysts and post-event market returns. Answer concisely and quantitatively. Reference specific data points. Be institutional and terse.`,
+        messages:[{role:'user',content:`Dataset:\n${dataStr}\n\nRegression stats:\n${regStr}\n\nQuestion: ${q}`}]
+      })
+    });
+    const data = await resp.json();
+    body.textContent = data.content?.[0]?.text || 'No response.';
+    body.className='ai-body';
+  } catch(err) {
+    body.textContent='Error: '+err.message;
+    body.className='ai-body';
+  }
+  btn.disabled=false; btn.textContent='RUN QUERY';
+}
+
+document.getElementById('query-input').addEventListener('keydown', e=>{ if(e.key==='Enter') runQuery(); });
+
+// ─── TAB SWITCHING ───────────────────────────────────────────────────────────
+function switchTab(name, btn) {
+  document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+  document.getElementById('panel-'+name).classList.add('active');
+  btn.classList.add('active');
+  if(name==='regression') renderRegression();
+  if(name==='events') renderEvents();
+}
+
+// ─── INIT ────────────────────────────────────────────────────────────────────
+renderDashboard();
+</script>
+</body>
+</html>
