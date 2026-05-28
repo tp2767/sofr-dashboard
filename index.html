@@ -1,928 +1,642 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>UST Threshold · Geopolitical Regime Analyzer</title>
-<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=JetBrains+Mono:wght@300;400;500;600&display=swap" rel="stylesheet">
-<style>
-:root {
-  --bg: #03060d;
-  --bg2: #070d1a;
-  --bg3: #0b1220;
-  --bg4: #0f1828;
-  --border: #121e32;
-  --border2: #1a2b42;
-  --text: #c8d4e8;
-  --muted: #445568;
-  --muted2: #243040;
-  --green: #00e87a;
-  --red: #ff3058;
-  --cyan: #00b8d9;
-  --gold: #f0b429;
-  --orange: #ff7043;
-  --purple: #9b6dff;
-  --mono: 'JetBrains Mono', monospace;
-  --display: 'Syne', sans-serif;
+"""
+UST Threshold Breach — Geopolitical Regime Analyzer
+Phase 2: Data Ingestion + ARIMAX Predictive Model
+Built: May 14, 2026
+"""
+
+import warnings
+warnings.filterwarnings('ignore')
+
+import numpy as np
+import pandas as pd
+from datetime import datetime, timedelta
+import json
+import openpyxl
+from scipy import stats
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 1. LOAD BLOOMBERG SHEET1 (price data)
+# ─────────────────────────────────────────────────────────────────────────────
+
+print("=" * 60)
+print("LOADING BLOOMBERG DATA")
+print("=" * 60)
+
+UPLOAD = "/mnt/user-data/uploads"
+
+wb = openpyxl.load_workbook(f"{UPLOAD}/UST_Threshold_Regression__1_.xlsx", read_only=True)
+
+# Sheet1: tickers in row 11, data from row 15, date in col H (index 7)
+ws1 = wb['Sheet1']
+tickers_row = list(ws1.iter_rows(min_row=11, max_row=11, values_only=True))[0]
+tickers_s1 = [x if x else f"col_{i}" for i, x in enumerate(tickers_row)]
+
+all_rows_s1 = list(ws1.iter_rows(min_row=15, values_only=True))
+
+# Build dataframe - date col is index 7, data cols 8 onward
+dates_s1 = []
+data_s1 = []
+for row in all_rows_s1:
+    if row[7] is None or not isinstance(row[7], datetime):
+        continue
+    dates_s1.append(row[7])
+    data_s1.append(row[8:])
+
+# Column names from row 11 starting at col I (index 8)
+col_names_s1 = [t for t in tickers_row[8:] if t is not None]
+# Pad if needed
+n_data_cols = len(data_s1[0]) if data_s1 else 0
+while len(col_names_s1) < n_data_cols:
+    col_names_s1.append(f"unknown_{len(col_names_s1)}")
+
+df_s1 = pd.DataFrame(data_s1, index=pd.DatetimeIndex(dates_s1), columns=col_names_s1[:n_data_cols])
+# Replace Bloomberg error strings with NaN
+df_s1 = df_s1.replace('#N/A N/A', np.nan).apply(pd.to_numeric, errors='coerce')
+df_s1.index.name = 'date'
+
+# Rename to clean names
+rename_s1 = {
+    'GT10 Govt': 'GT10',
+    'GT30 Govt': 'GT30',
+    'SPX Index': 'SPX',
+    'VIX Index': 'VIX',
+    'DXY Curncy': 'DXY',
+    'GC1 Comdty': 'GOLD',
+    'CL1 Comdty': 'WTI',
+    'NG1 Comdty': 'NG',
+    'MOVE Index': 'MOVE',
+    'CDX IG CDSI GEN 5Y Corp': 'CDX_IG',
+    'USOSFR1Z Curncy': 'SOFR_1Y',
+    'USGG10YR Index': 'UST10Y',
+    'USGG30YR Index': 'UST30Y',
+    'GTII30 Govt': 'TIPS30',
+    'XBTUSD Curncy': 'BTC',
+    'MXEF Index': 'MXEM',
 }
-* { box-sizing: border-box; margin: 0; padding: 0; }
-html { scroll-behavior: smooth; }
+df_s1 = df_s1.rename(columns=rename_s1)
 
-body {
-  background: var(--bg);
-  color: var(--text);
-  font-family: var(--mono);
-  min-height: 100vh;
-  overflow-x: hidden;
+print(f"Sheet1 loaded: {df_s1.shape[0]} rows, {df_s1.shape[1]} cols")
+print(f"  Date range: {df_s1.index[0].date()} → {df_s1.index[-1].date()}")
+print(f"  Columns: {df_s1.columns.tolist()}")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 2. LOAD BLOOMBERG MACRO_X
+# ─────────────────────────────────────────────────────────────────────────────
+
+ws2 = wb['Macro_X']
+tickers_mx = list(ws2.iter_rows(min_row=4, max_row=4, values_only=True))[0]
+all_rows_mx = list(ws2.iter_rows(min_row=8, values_only=True))
+
+dates_mx = []
+data_mx = []
+for row in all_rows_mx:
+    if row[0] is None or not isinstance(row[0], datetime):
+        continue
+    dates_mx.append(row[0])
+    data_mx.append(row[1:])
+
+col_names_mx = [t for t in tickers_mx[1:] if t is not None]
+n_mx = len(data_mx[0]) if data_mx else 0
+while len(col_names_mx) < n_mx:
+    col_names_mx.append(f"mx_unk_{len(col_names_mx)}")
+
+df_mx = pd.DataFrame(data_mx, index=pd.DatetimeIndex(dates_mx), columns=col_names_mx[:n_mx])
+df_mx = df_mx.replace('#N/A N/A', np.nan).apply(pd.to_numeric, errors='coerce')
+df_mx.index.name = 'date'
+
+rename_mx = {
+    'USGG2YR Index': 'UST2Y',
+    'USYC2Y10 Index': 'SLOPE_2S10S',
+    'USYC2Y30 Index': 'SLOPE_2S30S',
+    'GTII10 Govt': 'TIPS10',
+    'GVLQUSD Index': 'GS_FCI',
+    'VVIX Index': 'VVIX',
+    'SKEW Index': 'SKEW',
+    'VIX9D Index': 'VIX9D',
+    'VIX3M Index': 'VIX3M',
+    'USFR0C1C Curncy': 'FRA_OIS',
 }
+df_mx = df_mx.rename(columns=rename_mx)
 
-/* Scanline overlay */
-body::after {
-  content: '';
-  position: fixed;
-  inset: 0;
-  background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.03) 2px, rgba(0,0,0,0.03) 4px);
-  pointer-events: none;
-  z-index: 1000;
-}
+print(f"\nMacro_X loaded: {df_mx.shape[0]} rows, {df_mx.shape[1]} cols")
+print(f"  Columns: {df_mx.columns.tolist()}")
 
-/* Grid background */
-body::before {
-  content: '';
-  position: fixed;
-  inset: 0;
-  background-image:
-    linear-gradient(rgba(0,184,217,0.025) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(0,184,217,0.025) 1px, transparent 1px);
-  background-size: 48px 48px;
-  pointer-events: none;
-  z-index: 0;
-}
+wb.close()
 
-.wrap { position: relative; z-index: 1; max-width: 1320px; margin: 0 auto; padding: 0 24px 80px; }
+# ─────────────────────────────────────────────────────────────────────────────
+# 3. LOAD GPR (daily)
+# ─────────────────────────────────────────────────────────────────────────────
 
-/* ── HEADER ── */
-header {
-  padding: 32px 0 24px;
-  border-bottom: 1px solid var(--border);
-  margin-bottom: 0;
-}
-.header-top {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 20px;
-  flex-wrap: wrap;
-}
-.header-left {}
-.header-eyebrow {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-size: 9px;
-  letter-spacing: 3px;
-  color: var(--muted);
-  text-transform: uppercase;
-  margin-bottom: 12px;
-}
-.live-pip {
-  width: 7px; height: 7px; border-radius: 50%;
-  background: var(--green);
-  box-shadow: 0 0 10px var(--green);
-  animation: blink 2.4s infinite;
-}
-@keyframes blink { 0%,100%{opacity:1;} 50%{opacity:0.3;} }
+print("\n" + "=" * 60)
+print("LOADING EXTERNAL DATA SOURCES")
+print("=" * 60)
 
-h1 {
-  font-family: var(--display);
-  font-size: clamp(20px, 3vw, 32px);
-  font-weight: 800;
-  letter-spacing: -0.5px;
-  color: #eef2f8;
-  line-height: 1.1;
-}
-h1 em { color: var(--cyan); font-style: normal; }
-.header-sub {
-  margin-top: 8px;
-  font-size: 10px;
-  color: var(--muted);
-  letter-spacing: 1.5px;
-}
+df_gpr_raw = pd.read_excel(f"{UPLOAD}/data_gpr_daily_recent.xls", engine='xlrd')
+# Row 0 is the metadata row - skip it, real data starts at row 1
+df_gpr_raw = df_gpr_raw.iloc[1:].copy()
+df_gpr_raw['date'] = pd.to_datetime(df_gpr_raw['date'], errors='coerce')
+df_gpr_raw = df_gpr_raw.dropna(subset=['date'])
+df_gpr_raw = df_gpr_raw.set_index('date')
+df_gpr = df_gpr_raw[['GPRD', 'GPRD_ACT', 'GPRD_THREAT']].apply(pd.to_numeric, errors='coerce')
+df_gpr.index.name = 'date'
+df_gpr.columns = ['GPR', 'GPR_ACTS', 'GPR_THREAT']
 
-/* live rates ticker */
-.live-rates {
-  display: flex;
-  gap: 20px;
-  align-items: center;
-  flex-wrap: wrap;
-}
-.rate-chip {
-  background: var(--bg3);
-  border: 1px solid var(--border2);
-  border-radius: 5px;
-  padding: 8px 14px;
-  text-align: center;
-}
-.rate-chip-label { font-size: 8px; color: var(--muted); letter-spacing: 2px; margin-bottom: 4px; }
-.rate-chip-val { font-size: 18px; font-weight: 600; font-family: var(--display); }
-.rate-chip-sub { font-size: 9px; margin-top: 2px; }
-.breach { border-color: var(--red) !important; box-shadow: 0 0 12px rgba(255,48,88,0.15); }
-.breach .rate-chip-label { color: var(--red); }
+print(f"GPR daily loaded: {df_gpr.shape[0]} rows")
+print(f"  Date range: {df_gpr.index[0].date()} → {df_gpr.index[-1].date()}")
 
-/* ── TABS ── */
-.tab-bar {
-  display: flex;
-  gap: 0;
-  border-bottom: 1px solid var(--border);
-  margin-bottom: 28px;
-  overflow-x: auto;
-}
-.tab-bar::-webkit-scrollbar { display: none; }
-.tab {
-  background: transparent;
-  border: none;
-  border-bottom: 2px solid transparent;
-  color: var(--muted);
-  padding: 14px 22px;
-  cursor: pointer;
-  font-family: var(--mono);
-  font-size: 10px;
-  letter-spacing: 2px;
-  text-transform: uppercase;
-  transition: all 0.18s;
-  white-space: nowrap;
-  margin-bottom: -1px;
-}
-.tab:hover { color: var(--text); }
-.tab.active { color: var(--cyan); border-bottom-color: var(--cyan); }
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. LOAD ACM TERM PREMIUM (monthly → forward fill to daily)
+# ─────────────────────────────────────────────────────────────────────────────
 
-.panel { display: none; }
-.panel.active { display: block; }
-.panel-fade { animation: fadeIn 0.25s ease; }
-@keyframes fadeIn { from{opacity:0;transform:translateY(4px)} to{opacity:1;transform:none} }
+df_acm_raw = pd.read_excel(f"{UPLOAD}/ACMTermPremium.xls", engine='xlrd')
+df_acm_raw['date'] = pd.to_datetime(df_acm_raw['DATE'], errors='coerce')
+df_acm_raw = df_acm_raw.dropna(subset=['date']).set_index('date')
+df_acm = df_acm_raw[['ACMTP10']].rename(columns={'ACMTP10': 'ACM_TP10'})
+# Monthly data → resample daily, forward fill
+df_acm = df_acm.resample('D').last().ffill()
+df_acm.index.name = 'date'
 
-/* ── STAT GRID ── */
-.stat-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(155px, 1fr));
-  gap: 10px;
-  margin-bottom: 24px;
-}
-.stat-box {
-  background: var(--bg2);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 14px 16px;
-  transition: border-color 0.15s;
-}
-.stat-box:hover { border-color: var(--border2); }
-.stat-label { font-size: 8px; letter-spacing: 2px; color: var(--muted); text-transform: uppercase; margin-bottom: 7px; }
-.stat-val { font-size: 22px; font-weight: 700; font-family: var(--display); }
-.stat-sub { font-size: 9px; color: var(--muted2); margin-top: 3px; }
+print(f"ACM Term Premium loaded: {df_acm.shape[0]} rows (daily via ffill)")
+print(f"  Date range: {df_acm.index[0].date()} → {df_acm.index[-1].date()}")
 
-/* ── REGIME CARDS ── */
-.regime-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
-.regime-card { background: var(--bg2); border-radius: 8px; padding: 20px; }
-.regime-title { font-size: 9px; letter-spacing: 2px; text-transform: uppercase; margin-bottom: 16px; display: flex; align-items: center; gap: 8px; }
-.regime-metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
-.rm { text-align: center; }
-.rm-label { font-size: 8px; color: var(--muted); margin-bottom: 4px; }
-.rm-val { font-size: 16px; font-weight: 700; font-family: var(--display); }
+# ─────────────────────────────────────────────────────────────────────────────
+# 5. LOAD AAII SENTIMENT (weekly → forward fill)
+# ─────────────────────────────────────────────────────────────────────────────
 
-/* ── CALLOUT BOX ── */
-.callout {
-  border-radius: 8px;
-  padding: 20px 24px;
-  margin-bottom: 24px;
-}
-.callout-title { font-size: 9px; letter-spacing: 2px; text-transform: uppercase; margin-bottom: 14px; }
-.callout-row {
-  display: grid;
-  grid-template-columns: 100px 1fr repeat(4, 88px);
-  gap: 12px;
-  align-items: center;
-  padding: 9px 0;
-  border-bottom: 1px solid rgba(255,255,255,0.04);
-  font-size: 11px;
-}
-.callout-row:last-of-type { border-bottom: none; }
-.callout-note { font-size: 10px; margin-top: 14px; line-height: 1.7; }
+df_sent_raw = pd.read_excel(f"{UPLOAD}/sentiment.xls", engine='xlrd', header=3, skiprows=[4])
+df_sent_raw.columns = ['date','bullish','neutral','bearish','total',
+                        'bull_8wk_avg','bull_bear_spread','bullish_avg',
+                        'neutral_avg','bearish_avg','sp500_wk_high',
+                        'sp500_wk_low','sp500_close','unnamed']
+df_sent_raw['date'] = pd.to_datetime(df_sent_raw['date'], errors='coerce')
+df_sent_raw = df_sent_raw.dropna(subset=['date']).set_index('date')
+df_sent = df_sent_raw[['bullish','bearish','bull_bear_spread']].apply(pd.to_numeric, errors='coerce')
+df_sent.columns = ['AAII_BULL', 'AAII_BEAR', 'AAII_SPREAD']
+# Weekly → daily ffill
+df_sent = df_sent.resample('D').last().ffill()
+df_sent.index.name = 'date'
 
-/* ── REGRESSION TABLE ── */
-table { width: 100%; border-collapse: collapse; border-radius: 8px; overflow: hidden; font-size: 11px; }
-th {
-  padding: 10px 14px;
-  text-align: left;
-  font-size: 8px;
-  color: var(--muted);
-  letter-spacing: 2px;
-  text-transform: uppercase;
-  background: var(--bg3);
-  font-weight: 500;
-}
-td { padding: 10px 14px; border-bottom: 1px solid var(--border); vertical-align: middle; }
-tr:last-child td { border-bottom: none; }
-tr:hover td { background: rgba(255,255,255,0.01); }
-.badge { font-size: 8px; padding: 2px 8px; border-radius: 2px; letter-spacing: 1px; display: inline-block; }
-.badge-sig { background: rgba(240,180,41,0.12); color: var(--gold); }
-.badge-strong { background: rgba(0,232,122,0.1); color: var(--green); }
-.badge-weak { background: rgba(68,85,104,0.15); color: var(--muted); }
+print(f"AAII Sentiment loaded: {df_sent.shape[0]} rows (daily via ffill)")
+print(f"  Date range: {df_sent.index[0].date()} → {df_sent.index[-1].date()}")
 
-/* ── SCATTER ── */
-canvas { display: block; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); }
-.scatter-wrap { display: flex; flex-direction: column; gap: 8px; }
-.legend { display: flex; gap: 18px; justify-content: center; font-size: 10px; }
+# ─────────────────────────────────────────────────────────────────────────────
+# 6. MERGE ALL SOURCES
+# ─────────────────────────────────────────────────────────────────────────────
 
-/* ── EVENTS ── */
-.event-row {
-  display: grid;
-  grid-template-columns: 96px 1fr 86px repeat(5, 78px);
-  gap: 8px;
-  align-items: center;
-  padding: 11px 14px;
-  border-radius: 6px;
-  cursor: pointer;
-  border: 1px solid transparent;
-  margin-bottom: 4px;
-  background: var(--bg2);
-  transition: all 0.12s;
-  font-size: 11px;
-}
-.event-row:hover { border-color: var(--border2); background: var(--bg3); }
-.event-row.sel { border-color: var(--cyan); background: rgba(0,184,217,0.04); }
-.risk-pill { font-size: 8px; padding: 3px 8px; border-radius: 2px; letter-spacing: 1px; text-align: center; }
-.pill-on { background: rgba(0,232,122,0.1); color: var(--green); }
-.pill-off { background: rgba(255,48,88,0.1); color: var(--red); }
+print("\n" + "=" * 60)
+print("MERGING DATASETS")
+print("=" * 60)
 
-/* ── AI PANEL ── */
-.ai-box {
-  background: var(--bg3);
-  border: 1px solid rgba(0,184,217,0.18);
-  border-radius: 8px;
-  padding: 22px;
-  margin-top: 14px;
-}
-.ai-title { font-size: 8px; color: var(--cyan); letter-spacing: 2px; margin-bottom: 14px; }
-.ai-body { font-size: 12px; color: #6880a8; line-height: 1.95; white-space: pre-wrap; font-family: 'JetBrains Mono', monospace; }
-.ai-loading { color: var(--muted); font-size: 11px; }
+# Base: Bloomberg prices (trading days only)
+df = df_s1.copy()
+df = df.join(df_mx, how='left')
+df = df.join(df_gpr, how='left')
+df = df.join(df_acm, how='left')
+df = df.join(df_sent, how='left')
 
-/* ── QUERY ── */
-.query-wrap { display: flex; gap: 10px; margin-bottom: 14px; }
-.query-in {
-  flex: 1;
-  background: var(--bg2);
-  border: 1px solid var(--border2);
-  border-radius: 5px;
-  color: var(--text);
-  padding: 12px 14px;
-  font-family: var(--mono);
-  font-size: 12px;
-  outline: none;
-  transition: border-color 0.2s;
-}
-.query-in:focus { border-color: var(--cyan); }
-.query-in::placeholder { color: var(--muted); }
-.query-btn {
-  background: rgba(0,184,217,0.08);
-  border: 1px solid var(--cyan);
-  color: var(--cyan);
-  padding: 12px 22px;
-  border-radius: 5px;
-  cursor: pointer;
-  font-family: var(--mono);
-  font-size: 10px;
-  letter-spacing: 1.5px;
-  transition: all 0.15s;
-  white-space: nowrap;
-}
-.query-btn:hover { background: rgba(0,184,217,0.14); }
-.query-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-.pill-grid { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 20px; }
-.q-pill {
-  background: transparent;
-  border: 1px solid var(--border);
-  color: var(--muted);
-  padding: 4px 10px;
-  border-radius: 20px;
-  cursor: pointer;
-  font-family: var(--mono);
-  font-size: 9px;
-  transition: all 0.12s;
-}
-.q-pill:hover { border-color: var(--muted); color: var(--text); }
+print(f"Merged dataset: {df.shape[0]} rows × {df.shape[1]} cols")
+print(f"  Date range: {df.index[0].date()} → {df.index[-1].date()}")
 
-/* ── LAYOUT HELPERS ── */
-.two-col { display: grid; grid-template-columns: 1fr 420px; gap: 20px; align-items: start; }
-.section-label { font-size: 9px; letter-spacing: 2px; color: var(--muted); text-transform: uppercase; margin-bottom: 14px; }
+# ─────────────────────────────────────────────────────────────────────────────
+# 7. DERIVED VARIABLES
+# ─────────────────────────────────────────────────────────────────────────────
 
-.green { color: var(--green); }
-.red { color: var(--red); }
-.cyan { color: var(--cyan); }
-.gold { color: var(--gold); }
-.orange { color: var(--orange); }
-.muted { color: var(--muted); }
-.purple { color: var(--purple); }
+print("\nComputing derived variables...")
 
-/* ── FINDINGS STRIP ── */
-.findings {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: 12px;
-  margin-bottom: 28px;
-}
-.finding {
-  background: var(--bg2);
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--cyan);
-  border-radius: 0 6px 6px 0;
-  padding: 14px 16px;
-}
-.finding-head { font-size: 9px; color: var(--cyan); letter-spacing: 1.5px; margin-bottom: 6px; }
-.finding-body { font-size: 11px; color: #7888a8; line-height: 1.6; }
+# VIX term structure slope
+if 'VIX9D' in df.columns and 'VIX3M' in df.columns:
+    df['VIX_TS_SLOPE'] = df['VIX9D'] - df['VIX3M']
 
-footer {
-  border-top: 1px solid var(--border);
-  padding-top: 16px;
-  margin-top: 40px;
-  font-size: 8px;
-  color: var(--muted2);
-  letter-spacing: 1.5px;
-}
+# MOVE z-score (rolling 252-day)
+df['MOVE_ZSCORE'] = (df['MOVE'] - df['MOVE'].rolling(252).mean()) / df['MOVE'].rolling(252).std()
 
-@media (max-width: 900px) {
-  .regime-grid, .two-col { grid-template-columns: 1fr; }
-  .event-row { grid-template-columns: 80px 1fr 80px; }
-  .event-row .hm { display: none; }
-  .callout-row { grid-template-columns: 90px 1fr 80px; }
-  .callout-row .hm { display: none; }
-  .live-rates { gap: 10px; }
-}
-</style>
-</head>
-<body>
-<div class="wrap">
+# GPR z-score (rolling 252-day)
+if 'GPR' in df.columns:
+    df['GPR_ZSCORE'] = (df['GPR'] - df['GPR'].rolling(252).mean()) / df['GPR'].rolling(252).std()
 
-<header>
-  <div class="header-top">
-    <div class="header-left">
-      <div class="header-eyebrow">
-        <span class="live-pip"></span>
-        PERSONAL RESEARCH &nbsp;·&nbsp; MACRO FIXED INCOME &nbsp;·&nbsp; BLOOMBERG DATA
-      </div>
-      <h1>UST THRESHOLD BREACH &nbsp;<em>·</em>&nbsp; <em>GEOPOLITICAL REGIME ANALYZER</em></h1>
-      <div class="header-sub">10Y ≥ 4.50% + 30Y ≥ 5.00% &nbsp;·&nbsp; OLS REGRESSION &nbsp;·&nbsp; 5 EPISODES &nbsp;·&nbsp; 2005–2026 &nbsp;·&nbsp; BLOOMBERG DAILY DATA</div>
-    </div>
-    <div class="live-rates" id="live-rates">
-      <div class="rate-chip" id="chip-10y">
-        <div class="rate-chip-label">10Y UST</div>
-        <div class="rate-chip-val green" id="val-10y">4.446%</div>
-        <div class="rate-chip-sub muted" id="sub-10y">threshold: 4.50%</div>
-      </div>
-      <div class="rate-chip breach" id="chip-30y">
-        <div class="rate-chip-label">30Y UST ⚠</div>
-        <div class="rate-chip-val red" id="val-30y">5.004%</div>
-        <div class="rate-chip-sub" id="sub-30y" style="color:var(--red)">BREACH ACTIVE</div>
-      </div>
-      <div class="rate-chip" id="chip-move">
-        <div class="rate-chip-label">MOVE INDEX</div>
-        <div class="rate-chip-val gold" id="val-move">70.24</div>
-        <div class="rate-chip-sub muted">bond vol</div>
-      </div>
-    </div>
-  </div>
-</header>
+# 2s10s slope (use Bloomberg's USYC2Y10 or compute from GT10 - UST2Y)
+if 'SLOPE_2S10S' not in df.columns or df['SLOPE_2S10S'].isna().all():
+    if 'UST2Y' in df.columns:
+        df['SLOPE_2S10S'] = (df['UST10Y'] - df['UST2Y']) * 100  # bps
 
-<!-- TABS -->
-<div class="tab-bar" style="margin-top:0; border-top: none;">
-  <button class="tab active" onclick="switchTab('dashboard',this)">Dashboard</button>
-  <button class="tab" onclick="switchTab('regression',this)">Regression</button>
-  <button class="tab" onclick="switchTab('events',this)">Events</button>
-  <button class="tab" onclick="switchTab('findings',this)">Key Findings</button>
-  <button class="tab" onclick="switchTab('query',this)">Query AI</button>
-</div>
+# Real 10Y rate (GT10 - TIPS10) — 10Y breakeven
+if 'TIPS10' in df.columns:
+    df['REAL_10Y'] = df['GT10'] - df['TIPS10']
 
-<!-- ═══ DASHBOARD ═══ -->
-<div class="panel active panel-fade" id="panel-dashboard">
+# Threshold breach flags
+df['BREACH_10Y'] = (df['GT10'] >= 4.50).astype(int)
+df['BREACH_30Y'] = (df['GT30'] >= 5.00).astype(int)
+df['BREACH_EITHER'] = ((df['BREACH_10Y'] == 1) | (df['BREACH_30Y'] == 1)).astype(int)
 
-  <div class="stat-grid" id="stat-grid"></div>
+# Compute forward returns for target assets
+ASSETS = {'SPX': 'SPX', 'GOLD': 'GOLD', 'WTI': 'WTI', 'BTC': 'BTC', 'MXEM': 'MXEM'}
+HORIZONS = [1, 5, 20]
 
-  <div class="regime-grid">
-    <div class="regime-card" style="border:1px solid rgba(0,232,122,0.1)">
-      <div class="regime-title" style="color:var(--green)"><span>▸</span> RISK-ON REGIME (n=3)</div>
-      <div class="regime-metrics" id="rm-on"></div>
-    </div>
-    <div class="regime-card" style="border:1px solid rgba(255,48,88,0.1)">
-      <div class="regime-title" style="color:var(--red)"><span>▸</span> RISK-OFF REGIME (n=10)</div>
-      <div class="regime-metrics" id="rm-off"></div>
-    </div>
-  </div>
+for asset_col in ASSETS.values():
+    if asset_col in df.columns:
+        for h in HORIZONS:
+            fwd_col = f'{asset_col}_r{h}'
+            df[fwd_col] = df[asset_col].pct_change(h).shift(-h) * 100
 
-  <!-- Iran callout -->
-  <div class="callout" style="background:rgba(240,180,41,0.04);border:1px solid rgba(240,180,41,0.15)">
-    <div class="callout-title" style="color:var(--gold)">◆ IRAN-US DIPLOMACY — SIGNAL EXTRACTION (n=2)</div>
-    <div id="iran-rows"></div>
-    <div class="callout-note" style="color:var(--muted)">
-      Pattern: Iran-US de-escalation at these yield levels → SPX +1.8% T+5 avg, oil −1.6% T+1, gold −2.1% T+1. 
-      SPX T+20 averages +8.9% across both events — strongest sustained equity rally in the dataset.
-      BTC +2.4% T+5 (modest, likely driven by risk-on flows rather than geopolitical sensitivity).
-    </div>
-  </div>
+print(f"  Derived columns added. Final shape: {df.shape}")
 
-  <!-- Current conditions -->
-  <div class="callout" style="background:rgba(255,48,88,0.03);border:1px solid rgba(255,48,88,0.12)">
-    <div class="callout-title" style="color:var(--red)">⚠ CURRENT CONDITIONS — MAY 14, 2026</div>
-    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;margin-bottom:14px">
-      <div class="stat-box" style="border-color:rgba(255,48,88,0.2)">
-        <div class="stat-label" style="color:var(--red)">30Y Status</div>
-        <div class="stat-val red">BREACH</div>
-        <div class="stat-sub">30Y = 5.004% ≥ 5.00%</div>
-      </div>
-      <div class="stat-box">
-        <div class="stat-label">10Y Status</div>
-        <div class="stat-val" style="color:var(--gold)">NEAR</div>
-        <div class="stat-sub">10Y = 4.446% / need 4.50%</div>
-      </div>
-      <div class="stat-box">
-        <div class="stat-label">MOVE Index</div>
-        <div class="stat-val gold">70.24</div>
-        <div class="stat-sub">Low vol — 2006 analog</div>
-      </div>
-      <div class="stat-box">
-        <div class="stat-label">BTC at Last Full Breach</div>
-        <div class="stat-val purple">$108,282</div>
-        <div class="stat-sub">May 21, 2025</div>
-      </div>
-    </div>
-    <div class="callout-note" style="color:var(--muted)">
-      30Y is breaching 5% with MOVE at 70 — structurally similar to the 2006 episode (MOVE ~65-70, calm vol, Fed hiking plateau). 
-      If 10Y clears 4.50% on a risk-on geo catalyst (Iran deal, trade truce), the model points to SPX +2.9% T+5 and oil −1.6% T+1 
-      as the base case expression.
-    </div>
-  </div>
-</div>
+# Data coverage summary
+print("\nData coverage (non-null %):")
+key_cols = ['GT10', 'GT30', 'SPX', 'GOLD', 'WTI', 'BTC', 'MXEM',
+            'GPR', 'ACM_TP10', 'AAII_BULL', 'MOVE_ZSCORE',
+            'VIX_TS_SLOPE', 'FRA_OIS', 'SLOPE_2S10S']
+for col in key_cols:
+    if col in df.columns:
+        pct = df[col].notna().mean() * 100
+        print(f"  {col:<20}: {pct:.1f}%")
 
-<!-- ═══ REGRESSION ═══ -->
-<div class="panel panel-fade" id="panel-regression">
-  <p style="font-size:11px;color:var(--muted);margin-bottom:18px">
-    Two models: (1) Binary OLS — X = Risk-On dummy (1/0). (2) Geo Score OLS — X = continuous geopolitical intensity score (0–5). 
-    N=13 events. Bloomberg daily data 2005–2026.
-  </p>
-  <div class="two-col">
-    <div>
-      <div class="section-label">MODEL 1 — BINARY RISK-ON REGRESSION</div>
-      <table style="margin-bottom:20px; background:var(--bg2)">
-        <thead><tr>
-          <th>Outcome</th><th>β (Slope)</th><th>R²</th><th>P-Value</th><th>Signal</th>
-        </tr></thead>
-        <tbody id="reg1-body"></tbody>
-      </table>
+# ─────────────────────────────────────────────────────────────────────────────
+# 8. EVENT LOG — ALL 30+ EVENTS
+# ─────────────────────────────────────────────────────────────────────────────
 
-      <div class="section-label">MODEL 2 — GEO INTENSITY SCORE (0–5)</div>
-      <table style="background:var(--bg2)">
-        <thead><tr>
-          <th>Outcome</th><th>β per point</th><th>R²</th><th>P-Value</th><th>Signal</th>
-        </tr></thead>
-        <tbody id="reg2-body"></tbody>
-      </table>
+print("\n" + "=" * 60)
+print("BUILDING EXPANDED EVENT LOG (30+ EVENTS)")
+print("=" * 60)
 
-      <div style="margin-top:18px;background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:18px;">
-        <div class="section-label">INTERPRETATION</div>
-        <div style="font-size:11px;color:#5a7090;line-height:1.9;">
-          <strong style="color:var(--green)">MXEM T+1</strong> is the strongest and most statistically significant signal (p=0.033, R²=0.35) — 
-          emerging markets react fastest to geopolitical relief at these yield levels.<br><br>
-          <strong style="color:var(--gold)">Gold T+1</strong> is highly significant in both models (p=0.055 binary, p=0.046 geo score) — 
-          gold reliably sells off on risk-on catalysts during threshold breach regimes.<br><br>
-          <strong style="color:var(--cyan)">SPX T+20</strong> shows the strongest equity signal (p=0.066, R²=0.27) — 
-          the 20-day window matters more than T+1 or T+5.<br><br>
-          <strong style="color:var(--purple)">BTC</strong> shows no significant regression coefficient — 
-          crypto does not distinguish between geo event types at these yield levels. BTC moves on broader risk appetite, not geo specifics.<br><br>
-          <span style="color:var(--muted2)">UST yield changes post-event are noise — the rate level is already priced by the time of breach.</span>
-        </div>
-      </div>
-    </div>
+events_raw = [
+    # Original 13 (from handoff)
+    {"date": "2006-04-07", "label": "Fed hiking cycle peak",                "category": "Fed Policy",       "geo": "Domestic",     "riskOn": True,  "geoScore": 1},
+    {"date": "2007-05-23", "label": "Pre-GFC credit boom",                  "category": "Credit",           "geo": "Domestic",     "riskOn": True,  "geoScore": 1},
+    {"date": "2007-08-08", "label": "Subprime shock onset",                  "category": "Credit Crisis",    "geo": "Domestic",     "riskOn": False, "geoScore": 2},
+    {"date": "2023-10-19", "label": "Higher-for-longer shock",               "category": "Fed Policy",       "geo": "Domestic",     "riskOn": False, "geoScore": 1},
+    {"date": "2025-05-21", "label": "Fiscal/term premium episode",           "category": "Fiscal",           "geo": "Domestic",     "riskOn": False, "geoScore": 2},
 
-    <div class="scatter-wrap">
-      <canvas id="scatter-spx5" width="420" height="260"></canvas>
-      <div class="legend">
-        <span class="green">● Risk-On</span>
-        <span class="red">● Risk-Off</span>
-        <span class="cyan">— OLS Line</span>
-      </div>
-      <div style="font-size:9px;color:var(--muted2);text-align:center">SPX T+5 return by regime (Bloomberg data)</div>
+    # Iran geopolitical
+    {"date": "2013-11-24", "label": "Geneva interim deal (JCPOA precursor)", "category": "Iran Diplomacy",   "geo": "Iran",         "riskOn": True,  "geoScore": 3},
+    {"date": "2015-07-14", "label": "Full JCPOA deal signed",                "category": "Iran Diplomacy",   "geo": "Iran",         "riskOn": True,  "geoScore": 3},
+    {"date": "2018-05-08", "label": "Trump JCPOA withdrawal",                "category": "Iran Geopolitical","geo": "Iran",         "riskOn": False, "geoScore": 4},
+    {"date": "2019-05-08", "label": "Iran enrichment restart",               "category": "Iran Geopolitical","geo": "Iran",         "riskOn": False, "geoScore": 4},
+    {"date": "2020-01-03", "label": "Soleimani assassination",               "category": "Iran Geopolitical","geo": "Iran",         "riskOn": False, "geoScore": 5},
 
-      <canvas id="scatter-gold1" width="420" height="220" style="margin-top:12px"></canvas>
-      <div style="font-size:9px;color:var(--muted2);text-align:center">Gold T+1 — strongest significance (p=0.046)</div>
-    </div>
-  </div>
-</div>
+    # US-China trade
+    {"date": "2018-03-22", "label": "Trump Section 301 tariff announcement", "category": "Trade War",        "geo": "US-China",     "riskOn": False, "geoScore": 3},
+    {"date": "2018-07-06", "label": "First US-China tariffs take effect",    "category": "Trade War",        "geo": "US-China",     "riskOn": False, "geoScore": 3},
+    {"date": "2019-05-10", "label": "US tariff escalation to 25%",           "category": "Trade War",        "geo": "US-China",     "riskOn": False, "geoScore": 4},
+    {"date": "2019-08-23", "label": "China retaliation / escalation",        "category": "Trade War",        "geo": "US-China",     "riskOn": False, "geoScore": 4},
+    {"date": "2020-01-15", "label": "Phase 1 trade deal signed",             "category": "Trade War",        "geo": "US-China",     "riskOn": True,  "geoScore": 2},
 
-<!-- ═══ EVENTS ═══ -->
-<div class="panel panel-fade" id="panel-events">
-  <p style="font-size:11px;color:var(--muted);margin-bottom:14px">
-    13 events — all threshold breach episodes with geopolitical context. Returns from Bloomberg daily closes. Click any row for AI analysis ↓
-  </p>
-  <div id="events-list"></div>
-  <div id="ai-event-box" style="display:none" class="ai-box">
-    <div class="ai-title" id="ai-event-label"></div>
-    <div id="ai-event-body" class="ai-body"></div>
-  </div>
-</div>
+    # Fed events
+    {"date": "2013-05-22", "label": "Taper tantrum (Bernanke)",              "category": "Fed Policy",       "geo": "Domestic",     "riskOn": False, "geoScore": 1},
+    {"date": "2018-12-19", "label": "Powell hawkish press conference",        "category": "Fed Policy",       "geo": "Domestic",     "riskOn": False, "geoScore": 1},
+    {"date": "2022-03-16", "label": "First 2022 rate hike",                  "category": "Fed Policy",       "geo": "Domestic",     "riskOn": False, "geoScore": 1},
+    {"date": "2022-06-15", "label": "75bps shock hike",                      "category": "Fed Policy",       "geo": "Domestic",     "riskOn": False, "geoScore": 2},
+    {"date": "2023-07-26", "label": "Last hike of cycle",                    "category": "Fed Policy",       "geo": "Domestic",     "riskOn": True,  "geoScore": 1},
 
-<!-- ═══ KEY FINDINGS ═══ -->
-<div class="panel panel-fade" id="panel-findings">
-  <p style="font-size:11px;color:var(--muted);margin-bottom:20px">
-    Empirical findings from the Bloomberg dataset — 5,574 daily observations, 13 threshold breach events, 2005–2026.
-  </p>
+    # Gulf/oil geopolitical
+    {"date": "2019-09-14", "label": "Abqaiq drone attack (Saudi Aramco)",    "category": "Gulf Geopolitical","geo": "Gulf/MENA",    "riskOn": False, "geoScore": 4},
+    {"date": "2022-02-24", "label": "Russia-Ukraine invasion",               "category": "War",              "geo": "Russia-Ukraine","riskOn": False, "geoScore": 5},
+    {"date": "2022-03-08", "label": "Russian oil embargo",                   "category": "Sanctions",        "geo": "Russia-Ukraine","riskOn": False, "geoScore": 4},
 
-  <div class="findings" id="findings-grid"></div>
+    # Additional high-impact events to reach 30+
+    {"date": "2008-09-15", "label": "Lehman Brothers collapse",              "category": "Credit Crisis",    "geo": "Domestic",     "riskOn": False, "geoScore": 2},
+    {"date": "2010-05-06", "label": "Flash Crash / EU sovereign crisis",     "category": "Credit Crisis",    "geo": "Europe",       "riskOn": False, "geoScore": 3},
+    {"date": "2011-08-05", "label": "US debt downgrade (S&P)",               "category": "Fiscal",           "geo": "Domestic",     "riskOn": False, "geoScore": 3},
+    {"date": "2014-10-15", "label": "Treasury flash rally",                  "category": "Market Structure", "geo": "Domestic",     "riskOn": False, "geoScore": 1},
+    {"date": "2015-08-24", "label": "China devaluation / global selloff",    "category": "Trade War",        "geo": "US-China",     "riskOn": False, "geoScore": 3},
+    {"date": "2016-06-24", "label": "Brexit referendum result",              "category": "Geopolitical",     "geo": "Europe",       "riskOn": False, "geoScore": 3},
+    {"date": "2020-03-16", "label": "COVID emergency Fed cut (zero bound)",  "category": "Pandemic/Fed",     "geo": "Global",       "riskOn": False, "geoScore": 3},
+    {"date": "2023-03-10", "label": "SVB collapse / banking stress",         "category": "Credit",           "geo": "Domestic",     "riskOn": False, "geoScore": 2},
+    {"date": "2024-08-05", "label": "Yen carry unwind / global vol spike",   "category": "Market Structure", "geo": "Global",       "riskOn": False, "geoScore": 2},
+    {"date": "2025-04-02", "label": "Liberation Day tariff announcement",    "category": "Trade War",        "geo": "US-China",     "riskOn": False, "geoScore": 4},
+]
 
-  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:24px;margin-bottom:20px">
-    <div class="section-label">EPISODE COMPARISON TABLE</div>
-    <table style="background:transparent">
-      <thead><tr>
-        <th>Date</th><th>10Y</th><th>30Y</th><th>VIX</th><th>MOVE</th><th>SPX T+5</th><th>SPX T+20</th><th>Gold T+1</th><th>WTI T+1</th><th>BTC T+1</th>
-      </tr></thead>
-      <tbody id="episode-table"></tbody>
-    </table>
-  </div>
+# Enrich events with actual market data
+enriched_events = []
+for ev in events_raw:
+    ev_date = pd.to_datetime(ev['date'])
+    # Find closest trading day (within 3 business days)
+    candidates = df.index[(df.index >= ev_date) & (df.index <= ev_date + pd.Timedelta(days=5))]
+    if len(candidates) == 0:
+        candidates = df.index[(df.index >= ev_date - pd.Timedelta(days=5)) & (df.index <= ev_date)]
+    if len(candidates) == 0:
+        print(f"  WARNING: No trading data near {ev['date']} — skipping")
+        continue
+    t0 = candidates[0]
 
-  <div style="background:rgba(0,184,217,0.03);border:1px solid rgba(0,184,217,0.12);border-radius:8px;padding:20px">
-    <div class="section-label" style="color:var(--cyan)">TRIGGER HEADLINES TO WATCH</div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
-      <div>
-        <div style="font-size:9px;color:var(--green);letter-spacing:1.5px;margin-bottom:10px">TIER 1 — IMMEDIATE TRADE SIGNAL</div>
-        <div style="font-size:11px;color:#5a7090;line-height:2.1">
-          "Iran nuclear deal framework agreed"<br>
-          "US Iran sanctions relief"<br>
-          "JCPOA talks resume / breakthrough"<br>
-          "Oman mediating Iran US"<br>
-          "Iran uranium enrichment pause"<br>
-          "US China tariff pause / exemption"
-        </div>
-      </div>
-      <div>
-        <div style="font-size:9px;color:var(--gold);letter-spacing:1.5px;margin-bottom:10px">TIER 2 — WATCH / BUILD POSITION</div>
-        <div style="font-size:11px;color:#5a7090;line-height:2.1">
-          "Iran prisoner swap"<br>
-          "US Iran frozen assets released"<br>
-          "Iran IAEA access agreement"<br>
-          "Gulf states normalize Iran"<br>
-          "Russia Ukraine ceasefire framework"<br>
-          "Saudi Arabia Israel normalization"
-        </div>
-      </div>
-    </div>
-    <div style="font-size:10px;color:var(--muted2);margin-top:14px">
-      Bloomberg alerts: Set NH function on IRAN NUCLEAR · IRAN SANCTIONS · JCPOA · OMAN MEDIATION · CHINA TARIFF
-    </div>
-  </div>
-</div>
+    row = df.loc[t0]
+    e = ev.copy()
+    e['actual_date'] = t0.strftime('%Y-%m-%d')
 
-<!-- ═══ QUERY ═══ -->
-<div class="panel panel-fade" id="panel-query">
-  <p style="font-size:11px;color:var(--muted);margin-bottom:16px">
-    AI analyst with full access to Bloomberg dataset, regression statistics, and event log. Ask anything quantitative.
-  </p>
-  <div class="query-wrap">
-    <input class="query-in" id="q-input" placeholder="e.g. What's the expected SPX move if Iran deal prints tomorrow with 10Y at 4.5%?" />
-    <button class="query-btn" id="q-btn" onclick="runQuery()">RUN QUERY</button>
-  </div>
-  <div class="pill-grid">
-    <button class="q-pill" onclick="setQ(this)">What's the avg SPX T+20 after Iran-US deals?</button>
-    <button class="q-pill" onclick="setQ(this)">Does oil fall more on trade deals or Iran diplomacy?</button>
-    <button class="q-pill" onclick="setQ(this)">Is gold the cleanest risk-on signal in the dataset?</button>
-    <button class="q-pill" onclick="setQ(this)">How does MOVE level affect post-event equity returns?</button>
-    <button class="q-pill" onclick="setQ(this)">What does BTC do after threshold breach risk-on events?</button>
-    <button class="q-pill" onclick="setQ(this)">Compare 2006 vs 2023 breach regimes</button>
-    <button class="q-pill" onclick="setQ(this)">What's the best trade expression if 10Y hits 4.5% this week?</button>
-  </div>
-  <div id="q-result-box" style="display:none" class="ai-box">
-    <div class="ai-title">◆ ANALYSIS OUTPUT</div>
-    <div id="q-result-body" class="ai-body"></div>
-  </div>
-</div>
+    # Market conditions at event
+    e['GT10'] = round(row.get('GT10', np.nan), 3) if pd.notna(row.get('GT10', np.nan)) else None
+    e['GT30'] = round(row.get('GT30', np.nan), 3) if pd.notna(row.get('GT30', np.nan)) else None
+    e['VIX']  = round(row.get('VIX', np.nan), 2) if pd.notna(row.get('VIX', np.nan)) else None
+    e['MOVE'] = round(row.get('MOVE', np.nan), 1) if pd.notna(row.get('MOVE', np.nan)) else None
+    e['GPR']  = round(row.get('GPR', np.nan), 1) if pd.notna(row.get('GPR', np.nan)) else None
+    e['ACM_TP10'] = round(row.get('ACM_TP10', np.nan), 3) if pd.notna(row.get('ACM_TP10', np.nan)) else None
+    e['BREACH_10Y'] = int(row.get('BREACH_10Y', 0))
+    e['BREACH_30Y'] = int(row.get('BREACH_30Y', 0))
 
-<footer>FOR PERSONAL RESEARCH USE ONLY &nbsp;·&nbsp; NOT INVESTMENT ADVICE &nbsp;·&nbsp; DATA: BLOOMBERG TERMINAL (2005–2026) &nbsp;·&nbsp; MODEL: OLS BINARY + GEO SCORE REGRESSION</footer>
-</div>
+    # Forward returns
+    for asset in ['SPX', 'GOLD', 'WTI', 'BTC', 'MXEM']:
+        for h in [1, 5, 20]:
+            col = f'{asset}_r{h}'
+            val = row.get(col, np.nan)
+            e[col] = round(val, 3) if pd.notna(val) else None
 
-<script>
-// ─── REAL BLOOMBERG DATA ─────────────────────────────────────────────────────
-const EVENTS = [
-  { date:"2006-04-07", label:"2006 Fed hiking cycle peak", category:"Fed Hawkishness", geo:"none", riskOn:false, geoScore:0, GT10:4.979, GT30:5.056, VIX:12.26, MOVE:70.8, SPX_r1:0.086, SPX_r5:-0.492, SPX_r20:2.336, Gold_r1:1.564, Gold_r5:null, WTI_r1:2.003, WTI_r5:null, BTC_r1:null, BTC_r5:null, MXEM_r1:null, MXEM_r5:null, DXY_r1:null, GT10_chg1:2.0 },
-  { date:"2007-05-23", label:"2007 Pre-GFC credit boom peak", category:"Credit Bubble", geo:"none", riskOn:false, geoScore:0, GT10:4.849, GT30:5.004, VIX:13.24, MOVE:56.0, SPX_r1:-0.970, SPX_r5:0.522, SPX_r20:-0.620, Gold_r1:-1.404, Gold_r5:null, WTI_r1:-2.418, WTI_r5:null, BTC_r1:null, BTC_r5:null, MXEM_r1:null, MXEM_r5:null, DXY_r1:null, GT10_chg1:-3.0 },
-  { date:"2007-08-08", label:"2007 Subprime shock onset", category:"Credit Shock", geo:"none", riskOn:false, geoScore:0, GT10:4.879, GT30:5.042, VIX:21.4, MOVE:92.9, SPX_r1:-2.965, SPX_r5:-6.063, SPX_r20:-1.683, Gold_r1:-1.942, Gold_r5:null, WTI_r1:-0.776, WTI_r5:null, BTC_r1:null, BTC_r5:null, MXEM_r1:null, MXEM_r5:null, DXY_r1:null, GT10_chg1:8.0 },
-  { date:"2023-10-19", label:"2023 Higher-for-longer shock", category:"Fed Hawkishness", geo:"none", riskOn:false, geoScore:0, GT10:4.991, GT30:5.112, VIX:21.4, MOVE:134.6, SPX_r1:-1.259, SPX_r5:-3.291, SPX_r20:5.382, Gold_r1:0.716, Gold_r5:2.1, WTI_r1:-0.694, WTI_r5:-3.2, BTC_r1:3.039, BTC_r5:4.1, MXEM_r1:-1.2, MXEM_r5:1.8, DXY_r1:0.3, GT10_chg1:-8.0 },
-  { date:"2023-10-26", label:"2023 Peak rate fears / BOJ", category:"Global CB Policy", geo:"none", riskOn:false, geoScore:0, GT10:4.850, GT30:5.020, VIX:19.8, MOVE:128.0, SPX_r1:-0.480, SPX_r5:4.364, SPX_r20:10.137, Gold_r1:0.070, Gold_r5:1.8, WTI_r1:2.800, WTI_r5:-1.1, BTC_r1:-1.038, BTC_r5:2.3, MXEM_r1:0.9, MXEM_r5:3.2, DXY_r1:-0.1, GT10_chg1:-6.0 },
-  { date:"2024-04-25", label:"2024 CPI reacceleration", category:"Inflation Shock", geo:"none", riskOn:false, geoScore:0, GT10:4.710, GT30:4.820, VIX:15.3, MOVE:101.2, SPX_r1:1.021, SPX_r5:0.313, SPX_r20:4.346, Gold_r1:0.215, Gold_r5:-0.8, WTI_r1:0.335, WTI_r5:2.1, BTC_r1:-1.323, BTC_r5:-3.2, MXEM_r1:0.4, MXEM_r5:-0.9, DXY_r1:0.2, GT10_chg1:3.0 },
-  { date:"2024-10-23", label:"2024 Pre-election / debt ceiling", category:"Fiscal / Political", geo:"US election", riskOn:false, geoScore:1, GT10:4.260, GT30:4.520, VIX:18.2, MOVE:115.0, SPX_r1:0.215, SPX_r5:0.280, SPX_r20:2.065, Gold_r1:0.755, Gold_r5:1.2, WTI_r1:-0.820, WTI_r5:-1.8, BTC_r1:2.348, BTC_r5:8.4, MXEM_r1:-0.6, MXEM_r5:-1.2, DXY_r1:0.4, GT10_chg1:7.0 },
-  { date:"2025-01-14", label:"2025 Strong jobs / term premium", category:"Macro / Labor", geo:"none", riskOn:false, geoScore:0, GT10:4.790, GT30:4.970, VIX:18.9, MOVE:98.4, SPX_r1:1.831, SPX_r5:3.531, SPX_r20:3.861, Gold_r1:1.323, Gold_r5:-0.4, WTI_r1:3.277, WTI_r5:1.8, BTC_r1:3.364, BTC_r5:6.2, MXEM_r1:1.8, MXEM_r5:2.4, DXY_r1:0.1, GT10_chg1:-4.0 },
-  { date:"2025-02-10", label:"2025 Tariff shock / trade war", category:"Trade War", geo:"China-US trade", riskOn:false, geoScore:2, GT10:4.530, GT30:4.770, VIX:16.2, MOVE:88.6, SPX_r1:0.034, SPX_r5:0.794, SPX_r20:-7.449, Gold_r1:-0.062, Gold_r5:-1.8, WTI_r1:1.383, WTI_r5:-3.4, BTC_r1:-1.054, BTC_r5:-4.8, MXEM_r1:-0.8, MXEM_r5:-3.1, DXY_r1:0.6, GT10_chg1:-5.0 },
-  { date:"2025-04-11", label:"2025 US-Iran back-channel talks", category:"Geopolitical / Iran", geo:"Iran-US diplomacy", riskOn:true, geoScore:4, GT10:4.480, GT30:4.920, VIX:34.2, MOVE:108.4, SPX_r1:0.794, SPX_r5:-1.504, SPX_r20:5.529, Gold_r1:-0.540, Gold_r5:-1.2, WTI_r1:0.049, WTI_r5:-2.8, BTC_r1:1.226, BTC_r5:3.1, MXEM_r1:2.8, MXEM_r5:3.6, DXY_r1:-0.8, GT10_chg1:-7.0 },
-  { date:"2025-04-22", label:"2025 Iran nuclear framework", category:"Geopolitical / Iran", geo:"Iran-US diplomacy", riskOn:true, geoScore:5, GT10:4.310, GT30:4.780, VIX:28.6, MOVE:96.2, SPX_r1:1.666, SPX_r5:5.164, SPX_r20:12.344, Gold_r1:-3.661, Gold_r5:-2.8, WTI_r1:-3.172, WTI_r5:-4.1, BTC_r1:2.751, BTC_r5:1.8, MXEM_r1:3.1, MXEM_r5:4.2, DXY_r1:-1.2, GT10_chg1:-9.0 },
-  { date:"2025-05-06", label:"2025 US-China 90-day tariff pause", category:"Trade War", geo:"China-US trade", riskOn:true, geoScore:4, GT10:4.370, GT30:4.850, VIX:22.4, MOVE:88.0, SPX_r1:0.435, SPX_r5:4.987, SPX_r20:6.482, Gold_r1:-0.903, Gold_r5:-1.6, WTI_r1:-1.726, WTI_r5:0.8, BTC_r1:2.209, BTC_r5:4.4, MXEM_r1:3.8, MXEM_r5:5.1, DXY_r1:-0.9, GT10_chg1:9.0 },
-  { date:"2025-05-21", label:"2025 Fiscal/term premium episode", category:"Fiscal / Political", geo:"none", riskOn:false, geoScore:0, GT10:4.601, GT30:5.094, VIX:20.87, MOVE:102.1, SPX_r1:-0.044, SPX_r5:0.752, SPX_r20:2.331, Gold_r1:-0.558, Gold_r5:null, WTI_r1:-0.601, WTI_r5:null, BTC_r1:2.595, BTC_r5:null, MXEM_r1:null, MXEM_r5:null, DXY_r1:null, GT10_chg1:null },
-];
+    enriched_events.append(e)
 
-// ─── REGRESSION DATA (precomputed from Bloomberg) ─────────────────────────
-const REG_BINARY = [
-  { label:"SPX T+1",     slope:1.22,  r2:0.175, p:0.155, unit:"%" },
-  { label:"SPX T+5",     slope:2.81,  r2:0.142, p:0.204, unit:"%" },
-  { label:"SPX T+20",    slope:6.05,  r2:0.274, p:0.066, unit:"%" },
-  { label:"Gold T+1",    slope:-1.77, r2:0.296, p:0.055, unit:"%" },
-  { label:"Gold T+5",    slope:-1.85, r2:0.125, p:0.237, unit:"%" },
-  { label:"WTI T+1",     slope:-2.07, r2:0.216, p:0.110, unit:"%" },
-  { label:"WTI T+5",     slope:4.21,  r2:0.176, p:0.154, unit:"%" },
-  { label:"BTC T+1",     slope:0.93,  r2:0.059, p:0.499, unit:"%" },
-  { label:"BTC T+5",     slope:0.82,  r2:0.002, p:0.893, unit:"%" },
-  { label:"MXEM T+1",    slope:1.45,  r2:0.352, p:0.033, unit:"%" },
-  { label:"MXEM T+5",    slope:2.79,  r2:0.178, p:0.152, unit:"%" },
-  { label:"10Y chg T+1", slope:-0.66, r2:0.003, p:0.853, unit:" bps" },
-];
-const REG_GEO = [
-  { label:"SPX T+1",     slope:0.31,  r2:0.207, p:0.119, unit:"%" },
-  { label:"SPX T+5",     slope:0.71,  r2:0.167, p:0.165, unit:"%" },
-  { label:"SPX T+20",    slope:0.98,  r2:0.132, p:0.223, unit:"%" },
-  { label:"Gold T+1",    slope:-0.43, r2:0.314, p:0.046, unit:"%" },
-  { label:"Gold T+5",    slope:-0.42, r2:0.118, p:0.250, unit:"%" },
-  { label:"WTI T+1",     slope:-0.48, r2:0.211, p:0.114, unit:"%" },
-  { label:"WTI T+5",     slope:0.69,  r2:0.087, p:0.329, unit:"%" },
-  { label:"BTC T+1",     slope:0.14,  r2:0.024, p:0.671, unit:"%" },
-  { label:"BTC T+5",     slope:0.00,  r2:0.000, p:0.998, unit:"%" },
-  { label:"MXEM T+1",    slope:0.33,  r2:0.331, p:0.040, unit:"%" },
-  { label:"MXEM T+5",    slope:0.73,  r2:0.221, p:0.105, unit:"%" },
-  { label:"10Y chg T+1", slope:0.37,  r2:0.019, p:0.653, unit:" bps" },
-];
+print(f"Enriched events: {len(enriched_events)} / {len(events_raw)}")
 
-// ─── HELPERS ─────────────────────────────────────────────────────────────────
-const f = (v,d=2,unit="%") => v==null?'—':(v>=0?'+':'')+v.toFixed(d)+unit;
-const cc = v => v==null?'muted':v>=0?'green':'red';
+# ─────────────────────────────────────────────────────────────────────────────
+# 9. OLS REGRESSION WITH NEWEY-WEST SEs
+# ─────────────────────────────────────────────────────────────────────────────
 
-function sigBadge(p) {
-  if (p < 0.05) return `<span class="badge badge-strong">SIGNIFICANT ★★</span>`;
-  if (p < 0.1)  return `<span class="badge badge-sig">MARGINAL ★</span>`;
-  return `<span class="badge badge-weak">WEAK</span>`;
+print("\n" + "=" * 60)
+print("OLS REGRESSION (NEWEY-WEST, LAG=20)")
+print("=" * 60)
+
+from statsmodels.regression.linear_model import OLS
+from statsmodels.tools import add_constant
+from statsmodels.stats.sandwich_covariance import cov_hac
+
+def run_ols_nw(y_vals, x_vals, lag=20):
+    """OLS with Newey-West standard errors, returns dict of stats."""
+    mask = ~(np.isnan(y_vals) | np.isnan(x_vals))
+    y = y_vals[mask]
+    x = x_vals[mask]
+    n = len(y)
+    if n < 5:
+        return None
+    X = add_constant(x)
+    model = OLS(y, X).fit()
+    # Newey-West covariance
+    nw_cov = cov_hac(model, nlags=lag)
+    nw_se = np.sqrt(np.diag(nw_cov))
+    beta = model.params[1]
+    t_stat = beta / nw_se[1]
+    p_val = 2 * (1 - stats.t.cdf(abs(t_stat), df=n-2))
+    return {
+        'n': n, 'beta': beta, 'r2': model.rsquared,
+        'p_nw': p_val, 'se_nw': nw_se[1], 't_nw': t_stat
+    }
+
+# Build event arrays
+ev_df = pd.DataFrame(enriched_events)
+
+regression_results = {}
+assets_targets = ['SPX', 'GOLD', 'WTI', 'BTC', 'MXEM']
+horizons = [1, 5, 20]
+
+print(f"\n{'Asset':<8} {'Horizon':<10} {'Beta':>8} {'R²':>7} {'p(NW)':>8} {'n':>5} {'Sig'}")
+print("-" * 55)
+
+for asset in assets_targets:
+    regression_results[asset] = {}
+    for h in horizons:
+        col = f'{asset}_r{h}'
+        if col not in ev_df.columns:
+            continue
+        y = ev_df[col].values.astype(float)
+        x_geo = ev_df['geoScore'].values.astype(float)
+        x_risk = ev_df['riskOn'].astype(int).values.astype(float)
+
+        # Primary: geo score model
+        res = run_ols_nw(y, x_geo)
+        if res:
+            sig = "***" if res['p_nw'] < 0.01 else "**" if res['p_nw'] < 0.05 else "*" if res['p_nw'] < 0.10 else ""
+            print(f"{asset:<8} T+{h:<8} {res['beta']:>+8.3f} {res['r2']:>7.3f} {res['p_nw']:>8.3f} {res['n']:>5} {sig}")
+            regression_results[asset][f'T{h}_geo'] = res
+
+regression_results_json = {}
+for asset, hdict in regression_results.items():
+    regression_results_json[asset] = {}
+    for k, v in hdict.items():
+        if v:
+            regression_results_json[asset][k] = {kk: float(vv) if isinstance(vv, (np.floating, float)) else int(vv) for kk, vv in v.items()}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 10. ARIMAX MODEL — ROLLING WINDOW, SPX T+20 FOCAL
+# ─────────────────────────────────────────────────────────────────────────────
+
+print("\n" + "=" * 60)
+print("ARIMAX MODEL — ROLLING WINDOW FORECAST")
+print("=" * 60)
+
+try:
+    from statsmodels.tsa.statespace.sarimax import SARIMAX
+
+    # Use daily data from 2009 onward (BTC/CDX coverage improves)
+    df_model = df[df.index >= '2009-01-01'].copy()
+
+    # Build exogenous variable matrix
+    exog_cols = ['MOVE_ZSCORE', 'GPR_ZSCORE', 'VIX_TS_SLOPE', 'ACM_TP10', 'AAII_SPREAD', 'FRA_OIS']
+    available_exog = [c for c in exog_cols if c in df_model.columns and df_model[c].notna().mean() > 0.3]
+    print(f"Exogenous variables available: {available_exog}")
+
+    # Forward fill, then drop remaining NaNs in exog
+    df_model[available_exog] = df_model[available_exog].ffill()
+
+    # Target: SPX T+20 forward return
+    target = 'SPX_r20'
+    df_model_clean = df_model[[target] + available_exog].dropna()
+    print(f"Model dataset (post-dropna): {df_model_clean.shape[0]} rows")
+
+    # Rolling window ARIMAX: train=756 days (~3 years), predict next point
+    TRAIN_WINDOW = 756
+    forecasts = []
+    actuals = []
+    forecast_dates = []
+
+    n_total = len(df_model_clean)
+    step = 20  # predict every 20 trading days for speed
+
+    print(f"Running rolling ARIMAX ({TRAIN_WINDOW}-day window, every {step} days)...")
+
+    for i in range(TRAIN_WINDOW, n_total - 20, step):
+        train = df_model_clean.iloc[i - TRAIN_WINDOW:i]
+        y_train = train[target]
+        X_train = train[available_exog]
+
+        try:
+            model = SARIMAX(y_train, exog=X_train, order=(1, 0, 1),
+                            enforce_stationarity=False, enforce_invertibility=False)
+            fit = model.fit(disp=False, maxiter=100)
+
+            # One-step ahead forecast
+            X_fc = df_model_clean[available_exog].iloc[[i]]
+            fc = fit.forecast(steps=1, exog=X_fc)
+
+            forecasts.append(float(fc.iloc[0]))
+            actuals.append(float(df_model_clean[target].iloc[i]))
+            forecast_dates.append(df_model_clean.index[i])
+        except Exception:
+            continue
+
+    if len(forecasts) > 10:
+        fc_arr = np.array(forecasts)
+        act_arr = np.array(actuals)
+        ss_res = np.sum((act_arr - fc_arr) ** 2)
+        ss_tot = np.sum((act_arr - act_arr.mean()) ** 2)
+        oos_r2 = 1 - ss_res / ss_tot
+        corr = np.corrcoef(fc_arr, act_arr)[0, 1]
+        mae = np.mean(np.abs(fc_arr - act_arr))
+
+        print(f"\nARIMAX Rolling Results (SPX T+20):")
+        print(f"  N forecasts:     {len(forecasts)}")
+        print(f"  OOS R²:          {oos_r2:.4f}")
+        print(f"  Correlation:     {corr:.4f}")
+        print(f"  MAE:             {mae:.3f}%")
+        print(f"  Forecast std:    {fc_arr.std():.3f}%")
+        print(f"  Actual std:      {act_arr.std():.3f}%")
+
+        arimax_results = {
+            'n_forecasts': len(forecasts),
+            'oos_r2': float(oos_r2),
+            'correlation': float(corr),
+            'mae': float(mae),
+            'forecast_mean': float(fc_arr.mean()),
+            'actual_mean': float(act_arr.mean()),
+        }
+    else:
+        print("  Insufficient forecasts generated")
+        arimax_results = {'error': 'insufficient_data'}
+
+except Exception as ex:
+    print(f"  ARIMAX error: {ex}")
+    arimax_results = {'error': str(ex)}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 11. CURRENT CONDITIONS + ANALOG MATCHING
+# ─────────────────────────────────────────────────────────────────────────────
+
+print("\n" + "=" * 60)
+print("CURRENT CONDITIONS & ANALOG MATCHING")
+print("=" * 60)
+
+# Current conditions (last row of dataset)
+curr = df.iloc[-1]
+curr_date = df.index[-1]
+
+print(f"\nCurrent conditions as of {curr_date.date()}:")
+for col in ['GT10', 'GT30', 'VIX', 'MOVE', 'MOVE_ZSCORE', 'GPR', 'GPR_ZSCORE',
+            'ACM_TP10', 'SLOPE_2S10S', 'VIX_TS_SLOPE', 'AAII_BULL', 'AAII_BEAR']:
+    if col in df.columns:
+        val = curr.get(col, np.nan)
+        if pd.notna(val):
+            print(f"  {col:<20}: {val:.3f}")
+
+# Find top 5 historical analogs by Euclidean distance on key regime vars
+analog_features = ['MOVE_ZSCORE', 'GPR_ZSCORE', 'VIX_TS_SLOPE']
+available_features = [f for f in analog_features if f in df.columns]
+
+# Normalize
+df_norm = df[available_features].dropna()
+curr_vec = df_norm.loc[curr_date] if curr_date in df_norm.index else df_norm.iloc[-1]
+
+distances = np.sqrt(((df_norm - curr_vec) ** 2).sum(axis=1))
+distances = distances[distances.index < curr_date]  # historical only
+top5_analog_dates = distances.nsmallest(5).index
+
+print(f"\nTop 5 historical analogs (by {available_features}):")
+for ad in top5_analog_dates:
+    arow = df.loc[ad]
+    spx_r20 = arow.get('SPX_r20', np.nan)
+    gold_r1 = arow.get('GOLD_r1', np.nan)
+    wti_r1  = arow.get('WTI_r1', np.nan)
+    print(f"  {ad.date()} — dist={distances[ad]:.3f} | "
+          f"GT10={arow.get('GT10',np.nan):.2f} VIX={arow.get('VIX',np.nan):.1f} "
+          f"MOVE={arow.get('MOVE',np.nan):.0f} | "
+          f"SPX T+20={spx_r20:+.1f}% | Gold T+1={gold_r1:+.2f}% | WTI T+1={wti_r1:+.2f}%"
+          if pd.notna(spx_r20) else
+          f"  {ad.date()} — dist={distances[ad]:.3f} | "
+          f"GT10={arow.get('GT10',np.nan):.2f} VIX={arow.get('VIX',np.nan):.1f}")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 12. PACKAGE ALL OUTPUTS AS JSON (for index.html embedding)
+# ─────────────────────────────────────────────────────────────────────────────
+
+print("\n" + "=" * 60)
+print("PACKAGING OUTPUT JSON")
+print("=" * 60)
+
+def safe_float(x):
+    if x is None or (isinstance(x, float) and np.isnan(x)):
+        return None
+    return round(float(x), 4)
+
+analog_list = []
+for ad in top5_analog_dates:
+    arow = df.loc[ad]
+    analog_list.append({
+        'date': ad.strftime('%Y-%m-%d'),
+        'dist': safe_float(distances[ad]),
+        'GT10': safe_float(arow.get('GT10')),
+        'VIX': safe_float(arow.get('VIX')),
+        'MOVE': safe_float(arow.get('MOVE')),
+        'GPR': safe_float(arow.get('GPR')),
+        'SPX_r20': safe_float(arow.get('SPX_r20')),
+        'GOLD_r1': safe_float(arow.get('GOLD_r1')),
+        'WTI_r1': safe_float(arow.get('WTI_r1')),
+        'BTC_r5': safe_float(arow.get('BTC_r5')),
+        'MXEM_r1': safe_float(arow.get('MXEM_r1')),
+    })
+
+# Compute analog-weighted forecasts
+def analog_forecast(asset_ret_col):
+    vals = [df.loc[ad, asset_ret_col] for ad in top5_analog_dates
+            if asset_ret_col in df.columns and pd.notna(df.loc[ad, asset_ret_col])]
+    if not vals:
+        return None, None
+    weights = 1 / distances[top5_analog_dates[:len(vals)]].values
+    weights = weights / weights.sum()
+    weighted_mean = np.average(vals, weights=weights)
+    return safe_float(weighted_mean), safe_float(np.std(vals))
+
+forecast_output = {}
+for asset, col_prefix in [('SPX','SPX'), ('GOLD','GOLD'), ('WTI','WTI'), ('BTC','BTC'), ('MXEM','MXEM')]:
+    mean_20, std_20 = analog_forecast(f'{col_prefix}_r20')
+    mean_1, std_1   = analog_forecast(f'{col_prefix}_r1')
+    forecast_output[asset] = {
+        'T1_mean': mean_1, 'T1_std': std_1,
+        'T20_mean': mean_20, 'T20_std': std_20,
+    }
+
+curr_conditions = {}
+for col in ['GT10', 'GT30', 'VIX', 'MOVE', 'MOVE_ZSCORE', 'GPR', 'GPR_ZSCORE',
+            'ACM_TP10', 'SLOPE_2S10S', 'VIX_TS_SLOPE', 'AAII_BULL', 'AAII_BEAR',
+            'BREACH_10Y', 'BREACH_30Y']:
+    if col in curr.index:
+        curr_conditions[col] = safe_float(curr[col])
+
+output_bundle = {
+    'generated': datetime.now().strftime('%Y-%m-%d %H:%M'),
+    'current_conditions': curr_conditions,
+    'current_date': curr_date.strftime('%Y-%m-%d'),
+    'events': enriched_events,
+    'analogs': analog_list,
+    'forecasts': forecast_output,
+    'regression': regression_results_json,
+    'arimax': arimax_results,
 }
 
-function avg(arr, key) {
-  const v = arr.map(e=>e[key]).filter(x=>x!=null && !isNaN(x));
-  return v.length ? v.reduce((a,b)=>a+b,0)/v.length : null;
-}
+# Clean NaN from enriched_events
+def clean_json(obj):
+    if isinstance(obj, dict):
+        return {k: clean_json(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [clean_json(v) for v in obj]
+    elif isinstance(obj, float) and np.isnan(obj):
+        return None
+    elif isinstance(obj, (np.floating,)):
+        return float(obj)
+    elif isinstance(obj, (np.integer,)):
+        return int(obj)
+    return obj
 
-// ─── DASHBOARD ───────────────────────────────────────────────────────────────
-function renderDashboard() {
-  const on = EVENTS.filter(e=>e.riskOn);
-  const off = EVENTS.filter(e=>!e.riskOn);
+output_bundle = clean_json(output_bundle)
 
-  // stat grid
-  document.getElementById('stat-grid').innerHTML = [
-    {l:'Total Events',    v:EVENTS.length,  s:'threshold breach episodes', c:'cyan'},
-    {l:'Risk-On',         v:on.length,      s:'geo / deal catalysts',      c:'green'},
-    {l:'Risk-Off',        v:off.length,     s:'hawkish / shock regime',    c:'red'},
-    {l:'SPX T+5 (On)',    v:f(avg(on,'SPX_r5')), s:'avg equity return',    c:cc(avg(on,'SPX_r5'))},
-    {l:'SPX T+5 (Off)',   v:f(avg(off,'SPX_r5')), s:'avg equity return',   c:cc(avg(off,'SPX_r5'))},
-    {l:'Gold T+1 (On)',   v:f(avg(on,'Gold_r1')), s:'safe haven unwind',   c:cc(avg(on,'Gold_r1'))},
-    {l:'WTI T+1 (On)',    v:f(avg(on,'WTI_r1')),  s:'geo relief oil move', c:cc(avg(on,'WTI_r1'))},
-    {l:'MXEM T+1 (On)',   v:f(avg(on,'MXEM_r1')), s:'strongest signal p=0.033', c:cc(avg(on,'MXEM_r1'))},
-  ].map(s=>`<div class="stat-box"><div class="stat-label">${s.l}</div><div class="stat-val ${s.c}">${s.v}</div><div class="stat-sub">${s.s}</div></div>`).join('');
+out_path = '/home/claude/model_output.json'
+with open(out_path, 'w') as f:
+    json.dump(output_bundle, f, indent=2)
 
-  // regime metrics
-  const metrics = [['SPX T+1','SPX_r1','%'],['SPX T+5','SPX_r5','%'],['SPX T+20','SPX_r20','%'],['Gold T+1','Gold_r1','%'],['WTI T+1','WTI_r1','%'],['MXEM T+1','MXEM_r1','%']];
-  ['on','off'].forEach(regime => {
-    const arr = regime==='on'?on:off;
-    document.getElementById(`rm-${regime}`).innerHTML = metrics.map(([l,k,u])=>{
-      const v = avg(arr,k);
-      return `<div class="rm"><div class="rm-label">${l}</div><div class="rm-val ${cc(v)}">${f(v,2,u)}</div></div>`;
-    }).join('');
-  });
-
-  // Iran rows
-  const iran = EVENTS.filter(e=>e.geo==='Iran-US diplomacy');
-  document.getElementById('iran-rows').innerHTML = iran.map(e=>`
-    <div class="callout-row">
-      <span class="gold">${e.date}</span>
-      <span style="color:#7888a8">${e.label}</span>
-      <span class="${cc(e.SPX_r5)} hm">SPX T+5 ${f(e.SPX_r5)}</span>
-      <span class="${cc(e.WTI_r1)} hm">WTI T+1 ${f(e.WTI_r1)}</span>
-      <span class="${cc(e.Gold_r1)} hm">Gold ${f(e.Gold_r1)}</span>
-      <span class="${cc(e.SPX_r20)}">T+20 ${f(e.SPX_r20)}</span>
-    </div>`).join('');
-}
-
-// ─── REGRESSION ──────────────────────────────────────────────────────────────
-function renderRegRow(r) {
-  const sval = (r.slope>=0?'+':'')+r.slope.toFixed(2)+r.unit;
-  return `<tr>
-    <td style="color:var(--muted)">${r.label}</td>
-    <td class="${r.slope>=0?'green':'red'}" style="font-weight:600">${sval}</td>
-    <td style="color:${r.r2>0.25?'var(--cyan)':'var(--muted)'}">${r.r2.toFixed(3)}</td>
-    <td style="color:${r.p<0.1?'var(--gold)':'var(--muted)'}">${r.p.toFixed(3)}</td>
-    <td>${sigBadge(r.p)}</td>
-  </tr>`;
-}
-
-function renderRegression() {
-  document.getElementById('reg1-body').innerHTML = REG_BINARY.map(renderRegRow).join('');
-  document.getElementById('reg2-body').innerHTML = REG_GEO.map(renderRegRow).join('');
-  drawScatter('scatter-spx5', 'SPX_r5', 'SPX T+5 Return');
-  drawScatter('scatter-gold1', 'Gold_r1', 'Gold T+1 Return');
-}
-
-function drawScatter(canvasId, key, yLabel) {
-  const canvas = document.getElementById(canvasId);
-  if (!canvas) return;
-  const ctx = canvas.getContext('2d');
-  const W=canvas.width, H=canvas.height;
-  ctx.clearRect(0,0,W,H);
-  const pad={l:48,r:14,t:14,b:36};
-  const pW=W-pad.l-pad.r, pH=H-pad.t-pad.b;
-
-  ctx.fillStyle='#03060d'; ctx.fillRect(0,0,W,H);
-  ctx.strokeStyle='#0f1828'; ctx.lineWidth=1;
-  for(let i=0;i<=4;i++){
-    const y=pad.t+(i/4)*pH;
-    ctx.beginPath();ctx.moveTo(pad.l,y);ctx.lineTo(W-pad.r,y);ctx.stroke();
-  }
-
-  const ev = EVENTS.filter(e=>e[key]!=null);
-  const ys = ev.map(e=>e[key]);
-  const yMin=Math.min(...ys)-1.5, yMax=Math.max(...ys)+1.5;
-  const toX = v => pad.l+(v?0.72:0.28)*pW;
-  const toY = v => pad.t+pH-((v-yMin)/(yMax-yMin))*pH;
-
-  // compute regression line
-  const xs = ev.map(e=>e.riskOn?1:0);
-  const n=xs.length, xb=xs.reduce((a,b)=>a+b,0)/n, yb=ys.reduce((a,b)=>a+b,0)/n;
-  const ssxy=xs.reduce((a,x,i)=>a+(x-xb)*(ys[i]-yb),0);
-  const ssxx=xs.reduce((a,x)=>a+(x-xb)**2,0);
-  const slope=ssxx?ssxy/ssxx:0, intercept=yb-slope*xb;
-
-  // draw line
-  ctx.strokeStyle='rgba(0,184,217,0.5)'; ctx.lineWidth=1.5; ctx.setLineDash([5,5]);
-  ctx.beginPath();ctx.moveTo(pad.l,toY(intercept));ctx.lineTo(pad.l+pW,toY(intercept+slope));ctx.stroke();ctx.setLineDash([]);
-
-  // axis labels
-  ctx.fillStyle='#2a3c52'; ctx.font='9px JetBrains Mono'; ctx.textAlign='center';
-  ctx.fillText('RISK-OFF', toX(0), H-6); ctx.fillText('RISK-ON', toX(1), H-6);
-  ctx.textAlign='right';
-  for(let i=0;i<=4;i++){
-    const v=yMin+(yMax-yMin)*(1-i/4);
-    ctx.fillText((v>=0?'+':'')+v.toFixed(1)+'%', pad.l-5, pad.t+(i/4)*pH+3);
-  }
-
-  // center divider
-  ctx.strokeStyle='#1a2b42'; ctx.lineWidth=1;
-  ctx.beginPath();ctx.moveTo(pad.l+pW/2,pad.t);ctx.lineTo(pad.l+pW/2,H-pad.b);ctx.stroke();
-
-  // jitter seeds
-  const jseeds=[0.08,-0.06,0.14,-0.11,0.05,-0.18,0.12,0.09,-0.07,0.16,-0.04,0.13,0.07];
-  ev.forEach((e,i)=>{
-    const cx=toX(e.riskOn?1:0)+jseeds[i%jseeds.length]*pW*0.15;
-    const cy=toY(e[key]);
-    ctx.beginPath();ctx.arc(cx,cy,6,0,Math.PI*2);
-    ctx.fillStyle=e.riskOn?'rgba(0,232,122,0.88)':'rgba(255,48,88,0.88)';
-    ctx.fill();
-    ctx.strokeStyle='rgba(255,255,255,0.12)';ctx.lineWidth=1;ctx.stroke();
-  });
-}
-
-// ─── EVENTS ──────────────────────────────────────────────────────────────────
-let selIdx = null;
-function renderEvents() {
-  document.getElementById('events-list').innerHTML = EVENTS.map((e,i)=>`
-    <div class="event-row${selIdx===i?' sel':''}" id="erow-${i}" onclick="analyzeEvent(${i})">
-      <span class="muted">${e.date}</span>
-      <span style="color:#8898b8;font-size:10px">${e.label}</span>
-      <span class="risk-pill ${e.riskOn?'pill-on':'pill-off'}">${e.riskOn?'RISK-ON':'RISK-OFF'}</span>
-      <span class="${cc(e.SPX_r1)} hm">${f(e.SPX_r1)}<span class="muted"> T+1</span></span>
-      <span class="${cc(e.SPX_r5)} hm">${f(e.SPX_r5)}<span class="muted"> T+5</span></span>
-      <span class="${cc(e.WTI_r1)} hm">${f(e.WTI_r1)}<span class="muted"> OIL</span></span>
-      <span class="${cc(e.Gold_r1)} hm">${f(e.Gold_r1)}<span class="muted"> GOLD</span></span>
-      <span class="${cc(e.BTC_r1)} hm">${f(e.BTC_r1)}<span class="muted"> BTC</span></span>
-    </div>`).join('');
-}
-
-async function analyzeEvent(i) {
-  selIdx = i;
-  renderEvents();
-  const e = EVENTS[i];
-  const box = document.getElementById('ai-event-box');
-  const body = document.getElementById('ai-event-body');
-  document.getElementById('ai-event-label').textContent = `◆ AI ANALYSIS · ${e.label}`;
-  box.style.display='block';
-  body.textContent='Generating institutional analysis...';
-  body.className='ai-loading';
-  box.scrollIntoView({behavior:'smooth',block:'nearest'});
-
-  try {
-    const res = await fetch('https://api.anthropic.com/v1/messages',{
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({
-        model:'claude-sonnet-4-20250514', max_tokens:900,
-        system:`You are a quantitative fixed income macro analyst. You have access to Bloomberg daily data from 2005-2026 covering 5,574 trading days and 13 threshold breach events where 10Y UST ≥4.5% or 30Y UST ≥5%. Be terse, institutional, data-driven. Use bullet points. Max 220 words. Reference specific numbers. Cover: (1) macro context for why rates were at this level, (2) what the catalyst means for cross-asset flows, (3) actual market outcomes, (4) what this implies for the next breach.`,
-        messages:[{role:'user',content:`Analyze this Bloomberg threshold breach event:
-
-Date: ${e.date}
-Event: ${e.label}
-10Y: ${e.GT10}% | 30Y: ${e.GT30}%
-VIX: ${e.VIX} | MOVE: ${e.MOVE}
-Category: ${e.category} | Geo: ${e.geo}
-Risk-On: ${e.riskOn?'YES':'NO'} | Geo Score: ${e.geoScore}/5
-
-Bloomberg Returns:
-SPX: T+1 ${f(e.SPX_r1)} | T+5 ${f(e.SPX_r5)} | T+20 ${f(e.SPX_r20)}
-Gold T+1: ${f(e.Gold_r1)} | WTI T+1: ${f(e.WTI_r1)}
-BTC T+1: ${f(e.BTC_r1)} | MXEM T+1: ${f(e.MXEM_r1)}
-10Y chg T+1: ${e.GT10_chg1!=null?e.GT10_chg1+' bps':'N/A'}`}]
-      })
-    });
-    const d=await res.json();
-    body.textContent=d.content?.[0]?.text||'No response.';
-    body.className='ai-body';
-  } catch(err) { body.textContent='API error: '+err.message; body.className='ai-body'; }
-}
-
-// ─── KEY FINDINGS ─────────────────────────────────────────────────────────────
-function renderFindings() {
-  const findings = [
-    { head:"MXEM IS THE LEADING INDICATOR", color:"var(--green)", body:"Emerging market equities (MXEM) show the strongest regression signal: p=0.033, R²=0.35 for T+1. EM reprices geopolitical relief faster than SPX — use MXEM as a confirmation signal before entering SPX longs." },
-    { head:"GOLD IS THE CLEANEST SHORT", color:"var(--gold)", body:"Gold T+1 is statistically significant in both models (p=0.055 binary, p=0.046 geo score). When risk-on news prints during a threshold breach, sell gold immediately. Avg move: −1.77% T+1 on risk-on events." },
-    { head:"OIL: IRAN > CHINA TRADE", color:"var(--orange)", body:"Iran-US diplomacy drives WTI −1.6% T+1 on average. China trade deals show mixed oil response (+1.4% T+1 on tariff shock end). Iran deals unwind geopolitical oil premium; trade deals don't carry the same supply risk." },
-    { head:"SPX T+20 BEATS T+5", color:"var(--cyan)", body:"SPX T+20 has higher R² (0.274) and lower p-value (0.066) than T+5. The equity signal strengthens over time — not a day-trade, a 20-day position. Expected +6% differential risk-on vs risk-off at this yield level." },
-    { head:"BTC IS NOISE HERE", color:"var(--purple)", body:"Bitcoin shows no statistically meaningful regression coefficient (p=0.499 T+1, p=0.893 T+5). BTC at threshold breach events is driven by broader risk appetite, not the geopolitical catalyst specifically." },
-    { head:"MOVE LEVEL MATTERS MORE THAN YIELD", color:"var(--red)", body:"The 2007 subprime breach (MOVE 93) produced −6% SPX T+5. The 2006 Fed cycle breach (MOVE 71) produced only −0.5% T+5 despite similar yield levels. High MOVE = amplified downside on risk-off events." },
-    { head:"30Y BREACH WITHOUT 10Y = FISCAL SIGNAL", color:"var(--muted)", body:"Current setup: 30Y at 5.00%, 10Y at 4.45%. Partial breach. This matches the May 2025 fiscal episode, not the 2006/2007 full cycle peak. Term premium / fiscal concern is the driver, not rate cycle peak." },
-    { head:"IRAN DEAL: BEST T+20 IN DATASET", color:"var(--gold)", body:"Iran nuclear framework (Apr 2025) produced +12.3% SPX T+20 — the highest 20-day equity return in the entire breach dataset. JCPOA-style deals at high yield levels are the single most powerful risk-on catalyst." },
-  ];
-  document.getElementById('findings-grid').innerHTML = findings.map(f=>`
-    <div class="finding" style="border-left-color:${f.color}">
-      <div class="finding-head" style="color:${f.color}">${f.head}</div>
-      <div class="finding-body">${f.body}</div>
-    </div>`).join('');
-
-  // Episode comparison table
-  document.getElementById('episode-table').innerHTML = EVENTS.map(e=>`
-    <tr>
-      <td class="muted">${e.date}</td>
-      <td>${e.GT10}%</td>
-      <td>${e.GT30}%</td>
-      <td style="color:${e.VIX>25?'var(--red)':e.VIX>18?'var(--gold)':'var(--green)'}">${e.VIX}</td>
-      <td style="color:${e.MOVE>120?'var(--red)':e.MOVE>90?'var(--gold)':'var(--green)'}">${e.MOVE}</td>
-      <td class="${cc(e.SPX_r5)}">${f(e.SPX_r5)}</td>
-      <td class="${cc(e.SPX_r20)}">${f(e.SPX_r20)}</td>
-      <td class="${cc(e.Gold_r1)}">${f(e.Gold_r1)}</td>
-      <td class="${cc(e.WTI_r1)}">${f(e.WTI_r1)}</td>
-      <td class="${cc(e.BTC_r1)}">${f(e.BTC_r1)}</td>
-    </tr>`).join('');
-}
-
-// ─── QUERY ────────────────────────────────────────────────────────────────────
-function setQ(btn) { document.getElementById('q-input').value = btn.textContent; }
-
-async function runQuery() {
-  const q = document.getElementById('q-input').value.trim();
-  if (!q) return;
-  const btn = document.getElementById('q-btn');
-  btn.disabled=true; btn.textContent='ANALYZING...';
-  const box = document.getElementById('q-result-box');
-  const body = document.getElementById('q-result-body');
-  box.style.display='block'; body.textContent='Running analysis...'; body.className='ai-loading';
-
-  const ds = EVENTS.map(e=>`${e.date}|${e.label}|10Y:${e.GT10}%|30Y:${e.GT30}%|VIX:${e.VIX}|MOVE:${e.MOVE}|RiskOn:${e.riskOn}|GeoScore:${e.geoScore}|Geo:${e.geo}|SPX T+1:${f(e.SPX_r1)}|T+5:${f(e.SPX_r5)}|T+20:${f(e.SPX_r20)}|Gold T+1:${f(e.Gold_r1)}|WTI T+1:${f(e.WTI_r1)}|BTC T+1:${f(e.BTC_r1)}|MXEM T+1:${f(e.MXEM_r1)}`).join('\n');
-  const rs = `Binary OLS (X=riskOn): SPX T+5 β=+2.81% R²=0.142 p=0.204 | SPX T+20 β=+6.05% R²=0.274 p=0.066 | Gold T+1 β=-1.77% R²=0.296 p=0.055 | WTI T+1 β=-2.07% R²=0.216 p=0.110 | MXEM T+1 β=+1.45% R²=0.352 p=0.033 | BTC T+5 β=+0.82% R²=0.002 p=0.893\nGeo Score OLS: Gold T+1 β=-0.43%/pt p=0.046 | MXEM T+1 β=+0.33%/pt p=0.040`;
-
-  try {
-    const res = await fetch('https://api.anthropic.com/v1/messages',{
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({
-        model:'claude-sonnet-4-20250514', max_tokens:900,
-        system:`You are a quantitative fixed income and macro analyst. You have Bloomberg daily data from 2005-2026 covering 13 UST threshold breach events (10Y≥4.5% or 30Y≥5%). Answer concisely, quantitatively, institutionally. Reference specific data points and regression statistics. Be terse.`,
-        messages:[{role:'user',content:`Bloomberg Dataset:\n${ds}\n\nRegression Stats:\n${rs}\n\nCurrent conditions (May 14 2026): 10Y=4.446%, 30Y=5.004%, MOVE=70.24, SPX=7479, BTC=79634\n\nQuestion: ${q}`}]
-      })
-    });
-    const d=await res.json();
-    body.textContent=d.content?.[0]?.text||'No response.';
-    body.className='ai-body';
-  } catch(err){ body.textContent='Error: '+err.message; body.className='ai-body'; }
-  btn.disabled=false; btn.textContent='RUN QUERY';
-}
-document.addEventListener('DOMContentLoaded',()=>{
-  document.getElementById('q-input').addEventListener('keydown',e=>{if(e.key==='Enter')runQuery();});
-});
-
-// ─── TAB SWITCHING ────────────────────────────────────────────────────────────
-let rendered = {regression:false, events:false, findings:false};
-function switchTab(name, btn) {
-  document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));
-  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
-  document.getElementById('panel-'+name).classList.add('active');
-  btn.classList.add('active');
-  if (name==='regression' && !rendered.regression) { renderRegression(); rendered.regression=true; }
-  if (name==='events' && !rendered.events) { renderEvents(); rendered.events=true; }
-  if (name==='findings' && !rendered.findings) { renderFindings(); rendered.findings=true; }
-}
-
-// ─── INIT ─────────────────────────────────────────────────────────────────────
-renderDashboard();
-</script>
-</body>
-</html>
+print(f"\nOutput saved: {out_path}")
+print(f"  Events: {len(enriched_events)}")
+print(f"  Analogs: {len(analog_list)}")
+print(f"  Assets forecasted: {list(forecast_output.keys())}")
+print("\nDone.")
